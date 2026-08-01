@@ -211,7 +211,7 @@ const DIFF = {
   hard:   { kReact: 0.14, kDive: 8.5, diveCap: 3.8, chipReach: 3.2, meter: 2.0, wallW: 0.44, fkMin: 20, fkMax: 28 }
 };
 const ACC_MARK = 0.5;           // accuracy target: dead center of its own bar
-const BEND_F = 0.28;            // bend handle position along the flight
+const BEND_F = 0.19;            // bend handle position along the flight
 const CHIP_PW = 0.675;          // left half of the bar chips, right half drives
 
 let control = 'arrow';          // 'arrow' | 'swipe'
@@ -875,21 +875,26 @@ function drawBendHandle(){
 }
 
 function drawMeter(){
-  const w = Math.min(W*0.64, 300), h = 18;
-  const x = (W - w)/2, y = H*0.875;
-  const h2 = 12, y2 = y + h + 10;
-  ctx.fillStyle = 'rgba(13,20,28,.78)';
-  rr(x-5, y-5, w+10, (phase === 'acc' ? y2 + h2 - y : h) + 10, 13);
+  // Horizontal geometry, shared by the set pill and the accuracy bar
+  const w = Math.min(W*0.64, 300), h = 16;
+  const x = (W - w)/2, y = H*0.885;
   if (phase === 'set'){
+    ctx.fillStyle = 'rgba(13,20,28,.78)';
+    rr(x-5, y-5, w+10, h+10, 13);
     ctx.fillStyle = 'rgba(255,255,255,.85)';
     ctx.font = '600 11px "Space Grotesk"';
     ctx.textAlign = 'center';
-    ctx.fillText('TAP TO START', W/2, y + h - 5);
+    ctx.fillText('TAP TO START', W/2, y + h - 4);
     ctx.textAlign = 'left';
     return;
   }
-  // Zones: too soft | chip | drive | too hard
-  const grad = ctx.createLinearGradient(x, 0, x + w, 0);
+
+  // Vertical power bar on the right: soft at the bottom, blast at the top
+  const vw = 18, vh = Math.min(H*0.42, 340);
+  const vx = W - 42, vy = H*0.30;
+  ctx.fillStyle = 'rgba(13,20,28,.78)';
+  rr(vx-5, vy-5, vw+10, vh+10, 13);
+  const grad = ctx.createLinearGradient(0, vy+vh, 0, vy);
   grad.addColorStop(0.00, '#7E8C7A');
   grad.addColorStop(0.08, '#7E8C7A');
   grad.addColorStop(0.09, '#E8C84A');
@@ -899,33 +904,40 @@ function drawMeter(){
   grad.addColorStop(0.88, '#FF5A4E');
   grad.addColorStop(1.00, '#FF5A4E');
   ctx.fillStyle = grad;
-  rr(x, y, w, h, 7);
-  // Center divider with the two strike types
+  rr(vx, vy, vw, vh, 7);
+  // Chip/drive divider at the middle, labels rotated along the bar
   ctx.fillStyle = 'rgba(13,20,28,.45)';
-  rr(x + w*0.5 - 1, y, 2, h, 1);
+  rr(vx, vy + vh*0.5 - 1, vw, 2, 1);
   ctx.fillStyle = 'rgba(13,20,28,.6)';
   ctx.font = '700 9px "Space Grotesk"';
   ctx.textAlign = 'center';
-  ctx.fillText('\u25C4 CHIP', x + w*0.31, y + h/2 + 3.5);
-  ctx.fillText('DRIVE \u25BA', x + w*0.69, y + h/2 + 3.5);
+  ctx.save(); ctx.translate(vx + vw/2 + 3, vy + vh*0.72); ctx.rotate(-Math.PI/2); ctx.fillText('CHIP', 0, 0); ctx.restore();
+  ctx.save(); ctx.translate(vx + vw/2 + 3, vy + vh*0.30); ctx.rotate(-Math.PI/2); ctx.fillText('DRIVE', 0, 0); ctx.restore();
+  ctx.fillStyle = 'rgba(255,255,255,.75)';
+  ctx.font = '600 10px "Space Grotesk"';
+  ctx.fillText('PWR', vx + vw/2, vy - 12);
   ctx.textAlign = 'left';
+
   if (phase === 'power'){
-    // Needle on the power bar
-    const px = x + w * clamp(meter.p, 0, 1);
+    // Needle rides the vertical bar
+    const ny = vy + vh * (1 - clamp(meter.p, 0, 1));
     ctx.fillStyle = '#fff';
-    rr(px - 1.5, y - 3, 3, h + 6, 1.5);
+    rr(vx - 3, ny - 1.5, vw + 6, 3, 1.5);
     ctx.beginPath();
-    ctx.moveTo(px, y + h + 4);
-    ctx.lineTo(px - 5, y + h + 11);
-    ctx.lineTo(px + 5, y + h + 11);
+    ctx.moveTo(vx - 6, ny);
+    ctx.lineTo(vx - 13, ny - 5);
+    ctx.lineTo(vx - 13, ny + 5);
     ctx.closePath(); ctx.fill();
   } else {
-    // Locked power tick stays on the top bar
+    // Locked power tick stays on the vertical bar
     if (pend.meterP != null){
+      const ly = vy + vh * (1 - pend.meterP);
       ctx.fillStyle = '#fff';
-      rr(x + w*pend.meterP - 2, y - 4, 4, h + 8, 2);
+      rr(vx - 3, ly - 2, vw + 6, 4, 2);
     }
-    // Accuracy bar: symmetric gradient, dead center is the target
+    // Accuracy bar: horizontal, symmetric gradient, dead center is the target
+    ctx.fillStyle = 'rgba(13,20,28,.78)';
+    rr(x-5, y-5, w+10, h+10, 13);
     const ag = ctx.createLinearGradient(x, 0, x + w, 0);
     ag.addColorStop(0.00, '#FF5A4E');
     ag.addColorStop(0.30, '#E8C84A');
@@ -934,26 +946,23 @@ function drawMeter(){
     ag.addColorStop(0.70, '#E8C84A');
     ag.addColorStop(1.00, '#FF5A4E');
     ctx.fillStyle = ag;
-    rr(x, y2, w, h2, 6);
-    // Center tick
+    rr(x, y, w, h, 6);
     ctx.fillStyle = '#fff';
-    rr(x + w*0.5 - 1.5, y2 - 3, 3, h2 + 6, 1.5);
-    // Needle on the accuracy bar
+    rr(x + w*0.5 - 1.5, y - 3, 3, h + 6, 1.5);
     const px = x + w * clamp(meter.p, 0, 1);
     ctx.fillStyle = '#fff';
-    rr(px - 1.5, y2 - 3, 3, h2 + 6, 1.5);
+    rr(px - 1.5, y - 3, 3, h + 6, 1.5);
     ctx.beginPath();
-    ctx.moveTo(px, y2 + h2 + 4);
-    ctx.lineTo(px - 5, y2 + h2 + 11);
-    ctx.lineTo(px + 5, y2 + h2 + 11);
+    ctx.moveTo(px, y + h + 4);
+    ctx.lineTo(px - 5, y + h + 11);
+    ctx.lineTo(px + 5, y + h + 11);
     ctx.closePath(); ctx.fill();
+    ctx.fillStyle = 'rgba(255,255,255,.75)';
+    ctx.font = '600 10px "Space Grotesk"';
+    ctx.textAlign = 'center';
+    ctx.fillText('A C C U R A C Y', W/2, y - 24);
+    ctx.textAlign = 'left';
   }
-  // Stage label
-  ctx.fillStyle = 'rgba(255,255,255,.75)';
-  ctx.font = '600 10px "Space Grotesk"';
-  ctx.textAlign = 'center';
-  ctx.fillText(phase === 'power' ? 'P O W E R' : 'A C C U R A C Y', W/2, y - 26);
-  ctx.textAlign = 'left';
 }
 
 function drawSwipeTrail(){
