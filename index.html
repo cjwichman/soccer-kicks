@@ -875,11 +875,11 @@ function drawMeter(){
   ctx.lineTo(px - 5, y + h + 11);
   ctx.lineTo(px + 5, y + h + 11);
   ctx.closePath(); ctx.fill();
-  // Label
-  ctx.fillStyle = 'rgba(255,255,255,.85)';
-  ctx.font = '600 11px "Space Grotesk"';
+  // Label: short, and held clear above the accuracy pointer
+  ctx.fillStyle = 'rgba(255,255,255,.75)';
+  ctx.font = '600 10px "Space Grotesk"';
   ctx.textAlign = 'center';
-  ctx.fillText(phase === 'power' ? 'TAP IN THE GREEN ZONE' : 'STOP AT THE BLUE MARK', W/2, y - 20);
+  ctx.fillText(phase === 'power' ? 'P O W E R' : 'A C C U R A C Y', W/2, y - 26);
   ctx.textAlign = 'left';
 }
 
@@ -1025,6 +1025,24 @@ function frame(now){
 
 // ---------- Sound ----------
 let AC = null, master = null, muted = false;
+// iOS unlock: creating the context inside a direct touch gesture and looping
+// a silent <audio> element promotes the session to playback, which exempts
+// web audio from the ringer/silent switch
+let audioUnlocked = false;
+function unlockAudio(){
+  if (audioUnlocked) return;
+  audioUnlocked = true;
+  try { audio(); } catch(e){}
+  try {
+    const el = document.createElement('audio');
+    el.loop = true; el.preload = 'auto';
+    el.src = 'data:audio/wav;base64,UklGRjQAAABXQVZFZm10IBAAAAABAAEAQB8AAIA+AAACABAAZGF0YRAAAAAAAAAAAAAAAAAAAAAAAAAA';
+    el.play().catch(() => {});
+    window.__silentKeepAlive = el;
+  } catch(e){}
+}
+document.addEventListener('touchstart', unlockAudio, {passive: true});
+document.addEventListener('mousedown', unlockAudio);
 function audio(){
   if (!AC){
     AC = new (window.AudioContext || window.webkitAudioContext)();
