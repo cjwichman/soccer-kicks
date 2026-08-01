@@ -4,6 +4,10 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <title>Soccer Kicks</title>
+<link rel="icon" type="image/svg+xml" href="favicon.svg">
+<link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<meta name="apple-mobile-web-app-title" content="Soccer Kicks">
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
 <style>
   :root{
@@ -155,12 +159,24 @@ const TEAMS = [
 ];
 let teamIdx = 0;
 
+const SKINS = ['#F7C09B','#E0A878','#B57A4E','#8A5A34','#6E4326'];
+const HAIRC = ['#171310','#3B2A1A','#6B4A2B','#B9853C','#D9C08A','#7A7A7A'];
+const HAIRS = ['crop','crop','buzz','afro','bun','bald'];
+function randomLook(){
+  return {
+    skin:  SKINS[(Math.random()*SKINS.length)|0],
+    hairC: HAIRC[(Math.random()*HAIRC.length)|0],
+    hairS: HAIRS[(Math.random()*HAIRS.length)|0]
+  };
+}
+
 let mode = 'penalty';           // 'penalty' | 'freekick'
 let diff = 'easy';              // 'easy' | 'hard'
 const DIFF = {
-  //          keeper read %  keeper reach (frac of goal)  meter   overhit  scatter  wall px  free kick yards
-  easy: { read: 0.45, reachMax: 0.16, reachMin: 0.07, meter: 1.1, overhit: 0.97, scatter: 0.12, wallW: 18, fkMin: 16, fkMax: 22 },
-  hard: { read: 0.78, reachMax: 0.24, reachMin: 0.13, meter: 1.9, overhit: 0.92, scatter: 0.22, wallW: 24, fkMin: 18, fkMax: 26 }
+  //            keeper read %, keeper reach (frac of goal), dive speed, meter sweep, overhit point, scatter, wall px, free kick yards
+  easy:   { read: 0.45, reachMax: 0.16, reachMin: 0.07, diveSpd: 2.6, meter: 1.1, overhit: 0.97, scatter: 0.12, wallW: 18, fkMin: 16, fkMax: 22 },
+  medium: { read: 0.62, reachMax: 0.20, reachMin: 0.10, diveSpd: 3.0, meter: 1.5, overhit: 0.95, scatter: 0.16, wallW: 21, fkMin: 17, fkMax: 24 },
+  hard:   { read: 0.88, reachMax: 0.28, reachMin: 0.16, diveSpd: 3.8, meter: 2.4, overhit: 0.88, scatter: 0.28, wallW: 27, fkMin: 20, fkMax: 28 }
 };
 let control = 'arrow';          // 'arrow' | 'swipe'
 let score = 0, streak = 0;
@@ -220,6 +236,7 @@ function resetRound(){
   setRoundGeometry();
   ball.x = BALL.homeX; ball.y = BALL.homeY; ball.scale = 1; ball.rot = 0;
   keeper.cx = G.x + G.w/2; keeper.dive = 0; keeper.t = 0; keeper.pose = 'set';
+  Object.assign(keeper, randomLook());
   wall = [];
   if (mode === 'freekick'){
     // Four defenders ten yards from the ball, shading the near side
@@ -232,7 +249,7 @@ function resetRound(){
     const cx = lerp(BALL.homeX, G.x + G.w/2, f) + Math.sign(W/2 - BALL.homeX || 1) * G.w * 0.05;
     const start = cx - (n-1)/2 * gap;
     for (let i=0;i<n;i++){
-      wall.push({ x: start + i*gap, y: wy, jump: 0, jumpAt: f - rand(0.02, 0.12), h: rand(0.9,1.05), s: scale });
+      wall.push({ x: start + i*gap, y: wy, jump: 0, jumpAt: f - rand(0.02, 0.12), h: rand(0.9,1.05), s: scale, ...randomLook() });
     }
   }
 }
@@ -265,7 +282,7 @@ function onDown(e){
     aim.active = true;
     const r = reticleFrom(p);
     aim.tx = r.tx; aim.ty = r.ty;
-    aim.startY = p.y;
+    aim.startY = p.y; aim.sx = p.x; aim.sy = p.y;
   }
   e.preventDefault();
 }
@@ -296,7 +313,19 @@ function onUp(e){
   if (!aim.active) return;
   aim.active = false;
   const p = getPos(e);
-  // Require a real upward drag before locking aim
+  const moved = Math.hypot(p.x - aim.sx, p.y - aim.sy);
+  if (moved < 12){
+    // A plain tap aims straight at the tapped point
+    if (p.y < BALL.homeY - 80){
+      pend.tx = clamp(p.x, G.x - G.w * 0.25, G.x + G.w * 1.25);
+      pend.ty = clamp(p.y, G.y - 30, G.y + G.h + 40);
+      pend.curl = curlFor(pend.tx);
+      meter.p = 0; meter.dir = 1;
+      phase = 'power';
+    }
+    e.preventDefault(); return;
+  }
+  // Dragged aim: require a real upward drag before locking
   if ((aim.startY - p.y) < 30 && Math.abs(p.y - BALL.homeY) < 60) return;
   pend.tx = aim.tx; pend.ty = aim.ty;
   pend.curl = curlFor(aim.tx);
@@ -617,12 +646,10 @@ function drawKeeper(){
   // Body
   ctx.fillStyle = TEAMS[teamIdx].keeper;
   rr(-13, -46, 26, 30, 9);
-  // Head
-  ctx.fillStyle = '#F7C09B';
+  // Head and hair
+  ctx.fillStyle = keeper.skin || '#F7C09B';
   ctx.beginPath(); ctx.arc(0, -56, 11, 0, 7); ctx.fill();
-  // Hair
-  ctx.fillStyle = '#5B3A29';
-  ctx.beginPath(); ctx.arc(0, -60, 10, Math.PI, 0); ctx.fill();
+  drawHair(keeper.hairS || 'crop', keeper.hairC || '#5B3A29', 0, -56, 11);
   // Gloves
   ctx.fillStyle = '#fff';
   const spread = keeper.pose === 'dive' ? 30 : 20;
@@ -640,17 +667,26 @@ function drawWall(){
     ctx.save();
     ctx.translate(dfn.x, dfn.y - dfn.jump * 34 * s);
     ctx.scale(s * dfn.h, s * dfn.h);
+    // Shirt
     ctx.fillStyle = TEAMS[teamIdx].shirt;
-    rr(-11, -44, 22, 28, 8);
-    ctx.fillStyle = '#F7C09B';
-    ctx.beginPath(); ctx.arc(0, -52, 9.5, 0, 7); ctx.fill();
-    ctx.fillStyle = '#333';
-    ctx.beginPath(); ctx.arc(0, -55, 8.5, Math.PI, 0); ctx.fill();
-    // Arms crossed low
-    ctx.fillStyle = '#F7C09B';
-    rr(-9, -26, 18, 7, 3.5);
-    ctx.fillStyle = TEAMS[teamIdx].shorts; rr(-10, -16, 20, 9, 4);
-    ctx.fillStyle = '#F7C09B'; rr(-8, -7, 6, 7, 3); rr(2, -7, 6, 7, 3);
+    rr(-11, -48, 22, 26, 8);
+    // Shorts
+    ctx.fillStyle = TEAMS[teamIdx].shorts;
+    rr(-10, -24, 20, 10, 4);
+    // Legs and socks
+    ctx.fillStyle = dfn.skin;
+    rr(-8, -15, 6, 9, 2); rr(2, -15, 6, 9, 2);
+    ctx.fillStyle = '#F2F2F2';
+    rr(-8, -6, 6, 6, 2); rr(2, -6, 6, 6, 2);
+    // Arms down the front, hands apart guarding
+    ctx.fillStyle = dfn.skin;
+    rr(-9, -38, 5, 15, 2.5); rr(4, -38, 5, 15, 2.5);
+    ctx.beginPath(); ctx.arc(-6.5, -21, 4, 0, 7); ctx.fill();
+    ctx.beginPath(); ctx.arc(6.5, -21, 4, 0, 7); ctx.fill();
+    // Head and hair
+    ctx.fillStyle = dfn.skin;
+    ctx.beginPath(); ctx.arc(0, -56, 9.5, 0, 7); ctx.fill();
+    drawHair(dfn.hairS, dfn.hairC, 0, -56, 9.5);
     ctx.restore();
   }
 }
@@ -676,6 +712,23 @@ function drawBall(){
   }
   ctx.restore();
 }
+function drawHair(style, color, cx, cy, r){
+  if (style === 'bald') return;
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  if (style === 'afro'){
+    ctx.arc(cx, cy - 2, r + 3, Math.PI * 1.08, -0.08 * Math.PI);
+  } else if (style === 'buzz'){
+    ctx.arc(cx, cy - 3.5, r * 0.93, Math.PI, 0);
+  } else {
+    ctx.arc(cx, cy - 2, r + 0.5, Math.PI, 0);
+  }
+  ctx.closePath(); ctx.fill();
+  if (style === 'bun'){
+    ctx.beginPath(); ctx.arc(cx, cy - r - 2.5, 3.4, 0, 7); ctx.fill();
+  }
+}
+
 function penta(cx, cy, r){
   ctx.beginPath();
   for (let i=0;i<5;i++){
@@ -787,7 +840,7 @@ function frame(now){
     const t = clamp(shot.t, 0, 1);
     if (t > keeper.diveDelay && keeper.pose === 'set') keeper.pose = 'dive';
     if (keeper.pose === 'dive'){
-      keeper.dive = clamp(keeper.dive + dt*3, 0, 1);
+      keeper.dive = clamp(keeper.dive + dt * DIFF[diff].diveSpd, 0, 1);
       keeper.cx = lerp(keeper.cx, keeper.diveTarget, keeper.dive*0.25);
     }
     for (const d of wall){
@@ -926,8 +979,9 @@ document.getElementById('switchBtn').addEventListener('click', () => {
 
 const diffBtn = document.getElementById('diffBtn');
 diffBtn.addEventListener('click', () => {
-  diff = diff === 'easy' ? 'hard' : 'easy';
-  diffBtn.textContent = diff === 'easy' ? 'Easy' : 'Hard';
+  const order = ['easy','medium','hard'];
+  diff = order[(order.indexOf(diff) + 1) % order.length];
+  diffBtn.textContent = diff[0].toUpperCase() + diff.slice(1);
 });
 
 resize();
