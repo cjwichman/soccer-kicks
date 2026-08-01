@@ -74,7 +74,7 @@
 <div id="wrap"><canvas id="game"></canvas></div>
 <div id="hud">
   <div class="bug"><div class="lbl">Goals</div><div class="val" id="score">0</div></div>
-  <div id="midBtns"><button id="modeBtn">Penalties</button><button id="boardBtn" aria-label="Leaderboard">🏆</button><button id="muteBtn" aria-label="Sound">🔊</button></div>
+  <div id="midBtns"><button id="modeBtn">Free Kicks</button><button id="boardBtn" aria-label="Leaderboard">🏆</button><button id="muteBtn" aria-label="Sound">🔊</button></div>
   <div class="bug"><div class="lbl" id="streakLbl">Streak</div><div class="val" id="streak">0</div></div>
 </div>
 <button id="ctlBtn">Aim: Arrow</button>
@@ -202,7 +202,7 @@ function inkOrWhite(hex){
   return lum > 150 ? '#1E2A32' : '#fff';
 }
 
-let mode = 'penalty';           // 'penalty' | 'freekick'
+let mode = 'freekick';          // 'penalty' | 'freekick'
 let diff = 'easy';
 // Keeper skill is reaction time + dive speed; outcomes are deterministic
 const DIFF = {
@@ -217,7 +217,7 @@ let score = 0, streak = 0;
 let phase = 'aim';              // 'aim' | 'set' | 'power' | 'acc' | 'flight' | 'rebound'
 let shotsTaken = 0;
 
-const ball = { x:0, y:0, gy:0, scale:1, rot:0 };
+const ball = { x:0, y:0, gy:0, sg:12, scale:1, rot:0 };
 const shot = {};
 const keeper = { cx:0, dive:0, diveTarget:0, pose:'set' };
 let wall = [];                  // defenders in world coords {l, jumpAt(yd), jump, ...look}
@@ -283,7 +283,7 @@ function resetRound(){
   }
   setRoundGeometry();
   ball.x = BALL.homeX; ball.y = BALL.homeY; ball.gy = BALL.homeY + BALL.r * 0.9;
-  ball.scale = 1; ball.rot = 0;
+  ball.sg = dist; ball.scale = 1; ball.rot = 0;
   keeper.cx = G.x + G.w/2; keeper.dive = 0; keeper.pose = 'set';
   Object.assign(keeper, randomLook());
   wall = [];
@@ -317,6 +317,7 @@ function reticleFrom(p){
   };
 }
 function lockAim(tx, ty){
+  document.getElementById('hint').style.opacity = 0;
   pend.tx = tx; pend.ty = ty;
   const w = screenToWorld(tx, ty);
   pend.L = w.L; pend.H = w.H;
@@ -536,6 +537,7 @@ function startRebound(kind){
     reb.ground = G.y + G.h + 26;
     reb.amp = 30; reb.grow = 0.3;
   } else if (kind === 'save'){
+    ball.sg = Math.max(ball.sg, 0.8);
     reb.vx = Math.sign(ball.x - keeper.cx || 1) * rand(110, 170);
     reb.ground = G.y + G.h + 20;
     reb.amp = 22; reb.grow = 0.22;
@@ -967,7 +969,7 @@ function frame(now){
           if (w_.h > bottom && w_.h < top){
             const p = toScreen(dist - w_.s, w_.l, w_.h);
             ball.x = p.x; ball.y = p.y; ball.gy = p.gy;
-            ball.scale = ballRadiusAt(p.sg) / BALL.r;
+            ball.scale = ballRadiusAt(p.sg) / BALL.r; ball.sg = p.sg;
             finishShot('wall');
             break;
           }
@@ -979,17 +981,17 @@ function frame(now){
       if (at.falling && prog < 0.90){
         const p = toScreen(dist - at.s, at.l, 0);
         ball.x = p.x; ball.y = p.y; ball.gy = p.gy;
-        ball.scale = ballRadiusAt(p.sg) / BALL.r;
+        ball.scale = ballRadiusAt(p.sg) / BALL.r; ball.sg = p.sg;
         finishShot('short');
       } else if (prog >= 1){
         const p = toScreen(0, at.l, at.h);
         ball.x = p.x; ball.y = p.y; ball.gy = p.gy;
-        ball.scale = ballRadiusAt(p.sg) / BALL.r;
+        ball.scale = ballRadiusAt(p.sg) / BALL.r; ball.sg = p.sg;
         resolveEnd(at.l, at.h);
       } else {
         const p = toScreen(dist - at.s, at.l, at.h);
         ball.x = p.x; ball.y = p.y; ball.gy = p.gy;
-        ball.scale = ballRadiusAt(p.sg) / BALL.r;
+        ball.scale = ballRadiusAt(p.sg) / BALL.r; ball.sg = p.sg;
         ball.rot += dt * 14 * shot.power;
       }
     }
@@ -1004,9 +1006,10 @@ function frame(now){
     ball.rot += reb.vx * dt * 0.02;
   }
 
-  drawKeeper();
-  drawWall();
-  drawBall();
+  const wallSg = dist - YD.wall;
+  if (ball.sg <= 0.25){ drawBall(); drawKeeper(); drawWall(); }
+  else if (mode === 'freekick' && ball.sg < wallSg){ drawKeeper(); drawBall(); drawWall(); }
+  else { drawKeeper(); drawWall(); drawBall(); }
   if (control === 'arrow'){
     if (phase === 'aim' && aim.active){
       const w = screenToWorld(aim.tx, aim.ty);
