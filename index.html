@@ -78,7 +78,7 @@
 <button id="ctlBtn">Aim: Arrow</button>
 <button id="diffBtn">Easy</button>
 <div id="msg"></div>
-<div id="hint">Drag to aim &middot; drag the dot to bend &middot; tap to shoot</div>
+<div id="hint">Tap to aim &middot; start &middot; power &middot; accuracy</div>
 <div id="nameOverlay" class="overlay">
   <div class="panel">
     <div class="ptitle">Who's playing?</div>
@@ -115,7 +115,8 @@ window.addEventListener('resize', resize);
 // Scene geometry, recomputed on resize and per round
 const G = {};           // goal rect
 const BALL = {};        // ball spawn
-const YD = { goalW: 8, boxW: 44, boxD: 18, sixW: 20, sixD: 6, spot: 12, wall: 10 };
+const YD = { goalW: 8, goalH: 2.56, boxW: 44, boxD: 18, sixW: 20, sixD: 6, spot: 12, wall: 10 };
+const G_YD = 10.7;      // gravity, yards per s^2
 let dist = YD.spot;     // shooting distance in yards
 let pxPerYdGoal = 0;    // horizontal px per yard at the goal line
 const SPREAD = 2.1;     // horizontal scale from goal plane to ball plane
@@ -148,6 +149,22 @@ function groundY(yd){
 function widthPerYd(yd){
   return pxPerYdGoal * lerp(1, SPREAD, clamp(yd / dist, 0, 1));
 }
+// The ball-to-goal-center axis in screen x
+function axisX(sg){
+  return lerp(G.x + G.w/2, BALL.homeX, clamp(sg / dist, 0, 1));
+}
+// World (yards from goal, lateral yards, height yards) to screen
+function toScreen(sg, l, h){
+  const ppy = widthPerYd(sg);
+  const gy = groundY(sg);
+  return { x: axisX(sg) + l * ppy, y: gy - h * ppy, gy, ppy };
+}
+function screenToWorld(tx, ty){
+  return {
+    L: (tx - (G.x + G.w/2)) / pxPerYdGoal,
+    H: Math.max(0.05, (G.y + G.h - ty) / pxPerYdGoal)
+  };
+}
 
 // ---------- State ----------
 const TEAMS = [
@@ -162,39 +179,48 @@ let teamIdx = 0;
 const SKINS = ['#F7C09B','#E0A878','#B57A4E','#8A5A34','#6E4326'];
 const HAIRC = ['#171310','#3B2A1A','#6B4A2B','#B9853C','#D9C08A','#7A7A7A'];
 const HAIRS = ['crop','crop','buzz','afro','bun','bald'];
+const BOOTS = ['#171310','#F2F2F2','#D5FF3F','#FF5A4E','#2E7BE5','#FF8A3D','#4DD0E1'];
 function randomLook(){
   return {
     skin:  SKINS[(Math.random()*SKINS.length)|0],
     hairC: HAIRC[(Math.random()*HAIRC.length)|0],
-    hairS: HAIRS[(Math.random()*HAIRS.length)|0]
+    hairS: HAIRS[(Math.random()*HAIRS.length)|0],
+    boot:  BOOTS[(Math.random()*BOOTS.length)|0]
   };
+}
+function inkOrWhite(hex){
+  const n = parseInt(hex.slice(1), 16);
+  const lum = 0.299*((n>>16)&255) + 0.587*((n>>8)&255) + 0.114*(n&255);
+  return lum > 150 ? '#1E2A32' : '#fff';
 }
 
 let mode = 'penalty';           // 'penalty' | 'freekick'
-let diff = 'easy';              // 'easy' | 'hard'
+let diff = 'easy';
+// Keeper skill is reaction time + dive speed; outcomes are deterministic
 const DIFF = {
-  //            keeper read %, keeper reach (frac of goal), dive speed, meter sweep, overhit point, scatter, wall px, free kick yards
-  easy:   { read: 0.45, reachMax: 0.16, reachMin: 0.07, diveSpd: 2.6, meter: 1.1, overhit: 0.97, scatter: 0.12, wallW: 18, fkMin: 16, fkMax: 22 },
-  medium: { read: 0.62, reachMax: 0.20, reachMin: 0.10, diveSpd: 3.0, meter: 1.5, overhit: 0.95, scatter: 0.16, wallW: 21, fkMin: 17, fkMax: 24 },
-  hard:   { read: 0.88, reachMax: 0.28, reachMin: 0.16, diveSpd: 3.8, meter: 2.4, overhit: 0.88, scatter: 0.28, wallW: 27, fkMin: 20, fkMax: 28 }
+  easy:   { kReact: 0.30, kDive: 5.0, diveCap: 2.6, meter: 1.0, wallW: 0.30, fkMin: 16, fkMax: 22 },
+  medium: { kReact: 0.22, kDive: 6.5, diveCap: 3.2, meter: 1.4, wallW: 0.36, fkMin: 17, fkMax: 24 },
+  hard:   { kReact: 0.14, kDive: 8.5, diveCap: 3.8, meter: 2.0, wallW: 0.44, fkMin: 20, fkMax: 28 }
 };
+const ACC_MARK = 0.15;          // accuracy tick position on the downswing
+
 let control = 'arrow';          // 'arrow' | 'swipe'
 let score = 0, streak = 0;
-let phase = 'aim';              // 'aim' | 'power' | 'flight' | 'rebound'
+let phase = 'aim';              // 'aim' | 'set' | 'power' | 'acc' | 'flight' | 'rebound'
 let shotsTaken = 0;
 
-const ball = { x:0, y:0, scale:1, rot:0 };
-const shot = {};                // populated per shot
-const keeper = { cx:0, dive:0, diveTarget:0, t:0, pose:'set' };
-let wall = [];                  // free-kick defenders
+const ball = { x:0, y:0, gy:0, scale:1, rot:0 };
+const shot = {};
+const keeper = { cx:0, dive:0, diveTarget:0, pose:'set' };
+let wall = [];                  // defenders in world coords {l, jumpAt(yd), jump, ...look}
 let particles = [];
 let shake = 0;
 
-const aim = { active:false, tx:0, ty:0 };   // live reticle while dragging
-const pend = { tx:0, ty:0, curl:0 };        // locked aim awaiting power
-let bendDrag = false;                       // dragging the curve handle
+const aim = { active:false, tx:0, ty:0, sx:0, sy:0, startY:0 };
+const pend = { tx:0, ty:0, L:0, H:0, curl:0, prevT:0.6, power:0 };
 const meter = { p:0, dir:1 };
-const reb = {};                             // rebound animation params
+let bendDrag = false;
+const reb = {};
 
 let touch = null;               // swipe-mode point trail
 
@@ -202,54 +228,67 @@ let touch = null;               // swipe-mode point trail
 const lerp = (a,b,t) => a + (b-a)*t;
 const clamp = (v,a,b) => Math.max(a, Math.min(b, v));
 const rand = (a,b) => a + Math.random()*(b-a);
+const gauss = () => Math.random() + Math.random() + Math.random() - 1.5;
 
-// Curl grows with lateral aim and with distance, so long kicks bend more
-function curlFor(tx){
-  const base = clamp((tx - BALL.homeX) / (W * 0.6), -1, 1) * 0.85;
-  return base * clamp((dist - 10) / 16, 0.15, 1);
+// Solve the launch that passes through (d, H) at speed v; null if unreachable
+function solveLaunch(v, d, H){
+  const g = G_YD;
+  const disc = v*v*v*v - g*(g*d*d + 2*H*v*v);
+  if (disc < 0) return null;
+  const th = Math.atan((v*v - Math.sqrt(disc)) / (g*d));   // driven trajectory
+  return { th, T: d / (v * Math.cos(th)) };
 }
 
-// Shared flight math: the preview arrow and the ball use the same curve
-function trajPoint(t, x0, y0, tx, ty, power, curl){
-  const straight = lerp(x0, tx, t);
-  const x = straight + curl * Math.sin(t * Math.PI) * G.w * 0.45;
-  const arc = Math.sin(t * Math.PI) * lerp(30, 120, power) * Math.pow(dist / YD.spot, 0.4);
-  const y = lerp(y0, ty, t) - arc * (1 - t * 0.4);
-  return { x, y };
+// Build full trajectory params for a target; falls short if unreachable
+function buildTraj(L, H, power, curl){
+  const v = lerp(17, 38, power);
+  const sol = solveLaunch(v, dist, H);
+  const short = !sol;
+  const th = short ? 0.61 : sol.th;
+  const T = short ? dist / (v * Math.cos(th)) : sol.T;
+  const ac = curl * 14;                                    // Magnus, yd/s^2
+  const vl0 = (L - 0.5 * ac * T * T) / T;                  // arrive on target
+  return { v, th, T, ac, vl0, short,
+           vx: v * Math.cos(th), vy: v * Math.sin(th) };
 }
-function pathPoint(t){
-  return trajPoint(t, shot.x0, shot.y0, shot.tx, shot.ty, shot.power, shot.curl);
+function trajAt(tr, tau){
+  const s = tr.vx * tau;
+  return {
+    s,
+    h: Math.max(0, tr.vy * tau - 0.5 * G_YD * tau * tau),
+    l: tr.vl0 * tau + 0.5 * tr.ac * tau * tau,
+    falling: (tr.vy - G_YD * tau) < 0 && (tr.vy * tau - 0.5 * G_YD * tau * tau) <= 0
+  };
 }
 
 function resetRound(){
   phase = 'aim';
-  aim.active = false;
+  aim.active = false; bendDrag = false;
   teamIdx = (teamIdx + 1) % TEAMS.length;
   if (mode === 'freekick'){
     dist = rand(DIFF[diff].fkMin, DIFF[diff].fkMax);
     const side = Math.random() < 0.5 ? -1 : 1;
-    BALL.homeX = W/2 + side * rand(0.06, 0.18) * W;   // shooting at an angle
+    BALL.homeX = W/2 + side * rand(0.06, 0.18) * W;
   } else {
-    dist = YD.spot;                                    // penalty spot, 12 yards
+    dist = YD.spot;
     BALL.homeX = W / 2;
   }
   setRoundGeometry();
-  ball.x = BALL.homeX; ball.y = BALL.homeY; ball.scale = 1; ball.rot = 0;
-  keeper.cx = G.x + G.w/2; keeper.dive = 0; keeper.t = 0; keeper.pose = 'set';
+  ball.x = BALL.homeX; ball.y = BALL.homeY; ball.gy = BALL.homeY + BALL.r * 0.9;
+  ball.scale = 1; ball.rot = 0;
+  keeper.cx = G.x + G.w/2; keeper.dive = 0; keeper.pose = 'set';
   Object.assign(keeper, randomLook());
   wall = [];
   if (mode === 'freekick'){
-    // Four defenders ten yards from the ball, shading the near side
-    const n = 4;
-    const wallYd = dist - YD.wall;
-    const f = YD.wall / dist;                          // fraction of ball-to-goal line
-    const wy = groundY(wallYd);
-    const scale = widthPerYd(wallYd) / pxPerYdGoal;
-    const gap = G.w * 0.13 * scale;
-    const cx = lerp(BALL.homeX, G.x + G.w/2, f) + Math.sign(W/2 - BALL.homeX || 1) * G.w * 0.05;
-    const start = cx - (n-1)/2 * gap;
-    for (let i=0;i<n;i++){
-      wall.push({ x: start + i*gap, y: wy, jump: 0, jumpAt: f - rand(0.02, 0.12), h: rand(0.9,1.05), s: scale, ...randomLook() });
+    // Four defenders ten yards from the ball, shading the near post
+    const shade = Math.sign(BALL.homeX - (G.x + G.w/2) || 1) * 0.55;
+    const nums = [2,3,4,5,6,7,8,9,10,11].sort(() => Math.random() - 0.5);
+    for (let i=0;i<4;i++){
+      wall.push({
+        l: shade + (i - 1.5) * 0.62,
+        jump: 0, jumpAt: YD.wall - rand(0.5, 1.9),   // yards travelled trigger
+        h: rand(0.94, 1.05), num: nums[i], ...randomLook()
+      });
     }
   }
 }
@@ -261,18 +300,25 @@ function getPos(e){
   return { x: t.clientX, y: t.clientY, t: performance.now() };
 }
 function nearBall(p){
-  const dx = p.x - ball.x, dy = p.y - ball.y;
-  return Math.hypot(dx, dy) < BALL.r * 3.2;
+  return Math.hypot(p.x - ball.x, p.y - ball.y) < BALL.r * 3.2;
 }
 function reticleFrom(p){
-  // Reticle floats above the finger so it stays visible
   return {
     tx: clamp(p.x, G.x - G.w * 0.25, G.x + G.w * 1.25),
     ty: clamp(p.y - 70, G.y - 30, G.y + G.h + 40)
   };
 }
+function lockAim(tx, ty){
+  pend.tx = tx; pend.ty = ty;
+  const w = screenToWorld(tx, ty);
+  pend.L = w.L; pend.H = w.H;
+  pend.curl = clamp(pend.L / 6, -1, 1) * clamp((dist - 10) / 16, 0.1, 1);
+  const tr = buildTraj(pend.L, pend.H, 0.7, pend.curl);
+  pend.prevT = tr.T;
+  phase = 'set';
+}
+
 function onDown(e){
-  if (phase === 'power') return;   // handled at the document level
   if (phase !== 'aim') return;
   const p = getPos(e);
   if (control === 'swipe'){
@@ -288,10 +334,11 @@ function onDown(e){
 }
 function onMove(e){
   const p = getPos(e);
-  if (phase === 'power' && bendDrag){
-    // The handle sits at the curve's apex, so dragging maps directly to curl
-    const midX = (BALL.homeX + pend.tx) / 2;
-    pend.curl = clamp((p.x - midX) / (G.w * 0.45), -1.15, 1.15);
+  if (phase === 'set' && bendDrag){
+    // The handle sits at the curve apex; drag maps straight to curl
+    const straightMidX = (BALL.homeX + pend.tx) / 2;
+    const offYd = (p.x - straightMidX) / widthPerYd(dist / 2);
+    pend.curl = clamp(-offYd * 8 / (14 * pend.prevT * pend.prevT), -1.15, 1.15);
     e.preventDefault(); return;
   }
   if (phase !== 'aim') return;
@@ -317,20 +364,13 @@ function onUp(e){
   if (moved < 12){
     // A plain tap aims straight at the tapped point
     if (p.y < BALL.homeY - 80){
-      pend.tx = clamp(p.x, G.x - G.w * 0.25, G.x + G.w * 1.25);
-      pend.ty = clamp(p.y, G.y - 30, G.y + G.h + 40);
-      pend.curl = curlFor(pend.tx);
-      meter.p = 0; meter.dir = 1;
-      phase = 'power';
+      lockAim(clamp(p.x, G.x - G.w*0.25, G.x + G.w*1.25),
+              clamp(p.y, G.y - 30, G.y + G.h + 40));
     }
     e.preventDefault(); return;
   }
-  // Dragged aim: require a real upward drag before locking
   if ((aim.startY - p.y) < 30 && Math.abs(p.y - BALL.homeY) < 60) return;
-  pend.tx = aim.tx; pend.ty = aim.ty;
-  pend.curl = curlFor(aim.tx);
-  meter.p = 0; meter.dir = 1;
-  phase = 'power';
+  lockAim(aim.tx, aim.ty);
   e.preventDefault();
 }
 function swipeRelease(e){
@@ -340,35 +380,38 @@ function swipeRelease(e){
   const p0 = pts[0], p1 = pts[pts.length-1];
   const dx = p1.x - p0.x, dy = p1.y - p0.y;
   const swipeLen = Math.hypot(dx, dy);
-  const dt = Math.max(1, p1.t - p0.t);
-  if (swipeLen < 40 || dy > -20) return;   // must swipe upward
-
-  const speed = swipeLen / dt;                   // px per ms
-  const power = clamp(speed / 1.6, 0.35, 1);
-  const aimSpanX = G.w * 1.25;
-  const targetX = G.x + G.w/2 + clamp(dx / swipeLen, -1, 1) * aimSpanX * 0.6;
+  const dtms = Math.max(1, p1.t - p0.t);
+  if (swipeLen < 40 || dy > -20) return;
+  const power = clamp((swipeLen / dtms) / 1.6, 0.35, 1);
+  const targetX = G.x + G.w/2 + clamp(dx / swipeLen, -1, 1) * G.w * 0.75;
   const targetY = lerp(G.y + G.h * 0.92, G.y + G.h * 0.18, power);
-
-  // Curl from the swipe path's max lateral deviation
   let curl = 0;
   const nx = -dy / swipeLen, ny = dx / swipeLen;
   for (const p of pts){
     const d = (p.x - p0.x) * nx + (p.y - p0.y) * ny;
     if (Math.abs(d) > Math.abs(curl)) curl = d;
   }
-  curl = clamp(curl / 90, -1, 1);
-
-  startShot(targetX, targetY, power, curl);
+  const w = screenToWorld(targetX, targetY);
+  startShot(w.L, w.H, power, clamp(curl / 90, -1, 1), 0.12);
   e.preventDefault();
 }
+// Meter taps register anywhere except real controls
 function powerTap(e){
-  if (phase !== 'power') return;
+  if (phase !== 'set' && phase !== 'power' && phase !== 'acc') return;
   const t = e.target;
   if (t && t.closest && t.closest('button, input, .overlay')) return;
   const p = getPos(e);
-  const hm = trajPoint(0.5, BALL.homeX, BALL.homeY, pend.tx, pend.ty, 0.7, pend.curl);
-  if (Math.hypot(p.x - hm.x, p.y - hm.y) < 36) bendDrag = true;
-  else firePower();
+  if (phase === 'set'){
+    const hm = previewPoint(0.5);
+    if (Math.hypot(p.x - hm.x, p.y - hm.y) < 36){ bendDrag = true; }
+    else { meter.p = 0; meter.dir = 1; phase = 'power'; }
+  } else if (phase === 'power'){
+    pend.power = lerp(0.35, 1, meter.p);
+    meter.dir = -1;
+    phase = 'acc';
+  } else {
+    fireShot(Math.abs(meter.p - ACC_MARK));
+  }
   e.preventDefault();
 }
 document.addEventListener('touchstart', powerTap, {passive:false});
@@ -381,61 +424,47 @@ canvas.addEventListener('mousemove', onMove);
 canvas.addEventListener('mouseup', onUp);
 
 // ---------- Shot ----------
-function firePower(){
-  const p = meter.p;
-  let tx = pend.tx, ty = pend.ty;
-  if (p > DIFF[diff].overhit){         // overhit: shot scatters
-    tx += rand(-1, 1) * G.w * DIFF[diff].scatter;
-    ty -= rand(0, 26);
-  }
-  startShot(tx, ty, lerp(0.35, 1, p), pend.curl);
+function fireShot(miss){
+  startShot(pend.L, pend.H, pend.power, pend.curl, miss);
 }
 
-function startShot(tx, ty, power, curl){
+function startShot(L, H, power, curl, miss){
   shotsTaken++;
   document.getElementById('hint').style.opacity = 0;
+  // Execution error: grows with power, curl, and meter timing miss
+  const err = (0.22 + 1.4 * miss) * (0.35 + power * 0.95) * (1 + Math.abs(curl) * 0.7);
+  L += gauss() * err;
+  H = Math.max(0.05, H + gauss() * err * 0.55);
+  const tr = buildTraj(L, H, power, curl);
+  Object.assign(shot, tr, { L, H, curl, power, tau: 0, wallChecked: false });
   phase = 'flight';
-  shot.t = 0;
-  shot.dur = lerp(0.85, 0.55, power) * Math.pow(dist / YD.spot, 0.6);
-  shot.x0 = ball.x; shot.y0 = ball.y;
-  shot.tx = tx; shot.ty = ty;
-  shot.curl = curl;
-  shot.power = power;
-  shot.wallChecked = false;
-  shot.short = power < 0.33 + (dist - 12) * 0.012;   // under-hit shots die early
 
-  // Keeper decision: mostly reads the shot, sometimes guesses wrong
-  const goalMid = G.x + G.w/2;
-  const readsIt = Math.random() < DIFF[diff].read;
-  let diveX;
-  if (readsIt){
-    diveX = tx + rand(-G.w*0.10, G.w*0.10);
-  } else {
-    diveX = goalMid - (tx - goalMid) * rand(0.5, 1);   // wrong way
-  }
-  keeper.diveTarget = clamp(diveX, G.x + 24, G.x + G.w - 24);
-  keeper.diveDelay = rand(0.12, 0.3);
-  keeper.pose = 'set';
+  // Keeper reacts to the true final position after his reaction time
+  const kx = toScreen(0, clamp(L, -4, 4), 0).x;
+  keeper.diveTarget = clamp(kx, G.x + 20, G.x + G.w - 20);
+  keeper.pose = 'set'; keeper.dive = 0;
 }
 
-function resolveEnd(){
-  const tx = shot.tx;
-  const ty = Math.min(shot.ty, G.y + G.h - 6);   // low aims arrive along the ground
-  // Woodwork first
-  const nearLeft  = Math.abs(tx - G.x) < 11;
-  const nearRight = Math.abs(tx - (G.x + G.w)) < 11;
-  const underBar  = ty > G.y - 9 && ty < G.y + G.h;
-  const nearBar   = tx > G.x + 11 && tx < G.x + G.w - 11 && Math.abs(ty - G.y) < 9;
-  if (((nearLeft || nearRight) && underBar) || nearBar) return finishShot('post');
+function resolveEnd(L, h){
+  // Woodwork first (all in yards)
+  const postHit = Math.abs(Math.abs(L) - YD.goalW/2) < 0.16 && h < YD.goalH + 0.16;
+  const barHit = Math.abs(h - YD.goalH) < 0.14 && Math.abs(L) < YD.goalW/2 + 0.16;
+  if (postHit || barHit) return finishShot('post');
 
-  const inGoalX = tx > G.x + 11 && tx < G.x + G.w - 11;
-  const inGoalY = ty > G.y + 9 && ty < G.y + G.h;
-  if (!inGoalX || !inGoalY) return finishShot('miss');
+  const onTarget = Math.abs(L) < YD.goalW/2 - 0.16 && h < YD.goalH - 0.13;
+  if (!onTarget) return finishShot('miss');
 
-  // Keeper reach: harder to save corners and high power
-  const reach = lerp(G.w * DIFF[diff].reachMax, G.w * DIFF[diff].reachMin, shot.power);
-  const saved = Math.abs(keeper.cx - tx) < reach && ty > G.y + G.h*0.22;
-  finishShot(saved ? 'save' : 'goal');
+  // Deterministic keeper: reach = base + dive speed x time after reaction.
+  // The wall screens his view on free kicks; curl adds deception; a dive
+  // has a maximum extension unless the ball hangs long enough to reposition.
+  const kd = DIFF[diff];
+  const sight = mode === 'freekick' ? 0.22 : 0;
+  const tAvail = Math.max(0, shot.T - kd.kReact - sight);
+  let reach = 0.55 + kd.kDive * tAvail;
+  if (tAvail <= 0.6) reach = Math.min(reach, kd.diveCap);
+  reach *= 1 - 0.22 * Math.min(1, Math.abs(shot.curl));
+  const eff = Math.hypot(L, Math.max(0, h - 0.9) * 1.15);
+  finishShot(eff < reach ? 'save' : 'goal');
 }
 
 function finishShot(outcome){
@@ -458,47 +487,32 @@ function finishShot(outcome){
   setTimeout(resetRound, 1400);
 }
 
-function wallBlocked(){
-  // Check lateral position, with curl applied, when the ball crosses the wall plane
-  const t = YD.wall / dist;
-  const bx = pathPoint(t).x;
-  const highEnough = shot.ty < G.y + G.h * 0.45 && shot.power > 0.75;  // chip over
-  if (highEnough) return false;
-  for (const d of wall){
-    const jumped = d.jump > 0.4;
-    const blockW = DIFF[diff].wallW * (d.s || 1);
-    if (Math.abs(bx - d.x) < blockW && !(jumped && shot.ty > G.y + G.h*0.7)) return true;
-  }
-  return false;
-}
-
 // ---------- Rebounds ----------
 function startRebound(kind){
   phase = 'rebound';
   reb.t = 0; reb.x0 = ball.x; reb.y0 = ball.y; reb.s0 = ball.scale;
-  const dirIn = Math.sign(shot.tx - shot.x0) || (Math.random() < 0.5 ? -1 : 1);
+  const dirIn = Math.sign(shot.L) || (Math.random() < 0.5 ? -1 : 1);
   if (kind === 'wall'){
     reb.vx = -dirIn * rand(50, 110);
-    reb.ground = ball.y + 46;                 // drops back in front of the wall
+    reb.ground = ball.y + 46;
     reb.amp = 26; reb.grow = 0.35;
   } else if (kind === 'post'){
-    const offLeft = Math.abs(shot.tx - G.x) < Math.abs(shot.tx - (G.x + G.w));
-    reb.vx = (offLeft ? 1 : -1) * rand(130, 220);
+    reb.vx = -Math.sign(shot.L || 1) * rand(130, 220);
     reb.ground = G.y + G.h + 26;
     reb.amp = 30; reb.grow = 0.3;
   } else if (kind === 'save'){
-    reb.vx = Math.sign(shot.tx - keeper.cx || 1) * rand(110, 170);
+    reb.vx = Math.sign(ball.x - keeper.cx || 1) * rand(110, 170);
     reb.ground = G.y + G.h + 20;
     reb.amp = 22; reb.grow = 0.22;
   } else if (kind === 'short'){
     reb.vx = dirIn * rand(10, 30);
     reb.ground = ball.y + 10;
-    reb.amp = 5; reb.grow = -0.04;             // dribbles to a stop
+    reb.amp = 5; reb.grow = -0.04;
   } else if (kind === 'miss'){
     reb.vx = dirIn * rand(30, 70);
     reb.ground = ball.y + 8;
-    reb.amp = 0; reb.grow = -0.12;            // keeps shrinking into the distance
-  } else {                                    // goal: settle into the net
+    reb.amp = 0; reb.grow = -0.12;
+  } else {
     reb.vx = 0;
     reb.ground = ball.y + 14;
     reb.amp = 6; reb.grow = 0;
@@ -523,11 +537,8 @@ function confetti(x, y){
   const colors = ['#D5FF3F','#FFFFFF','#4DD0E1','#FFD23F'];
   for (let i=0;i<44;i++){
     particles.push({
-      x, y,
-      vx: rand(-4,4), vy: rand(-7,-1),
-      g: 0.18, life: 1,
-      size: rand(4,9),
-      c: colors[(Math.random()*colors.length)|0],
+      x, y, vx: rand(-4,4), vy: rand(-7,-1), g: 0.18, life: 1,
+      size: rand(4,9), c: colors[(Math.random()*colors.length)|0],
       spin: rand(-0.3,0.3), a: rand(0,Math.PI)
     });
   }
@@ -535,28 +546,21 @@ function confetti(x, y){
 
 // ---------- Drawing ----------
 function drawScene(){
-  // Night sky
   const sky = ctx.createLinearGradient(0,0,0,H*0.45);
   sky.addColorStop(0,'#101A2E'); sky.addColorStop(1,'#1E3A5C');
   ctx.fillStyle = sky; ctx.fillRect(0,0,W,H*0.45);
-
-  // Floodlight glow
   for (const fx of [W*0.08, W*0.92]){
     const g = ctx.createRadialGradient(fx, 0, 0, fx, 0, H*0.34);
     g.addColorStop(0,'rgba(255,250,225,.30)');
     g.addColorStop(1,'rgba(255,250,225,0)');
     ctx.fillStyle = g; ctx.fillRect(0,0,W,H*0.4);
   }
-
-  // Stands
   ctx.fillStyle = '#1B2430';
   ctx.fillRect(0, H*0.10, W, H*0.06);
   ctx.fillStyle = 'rgba(255,255,255,.22)';
   for (let x = 8; x < W; x += 14){
     ctx.beginPath(); ctx.arc(x, H*0.13 + ((x*7)%9), 1.6, 0, 7); ctx.fill();
   }
-
-  // Grass with mow stripes
   const gy = H * 0.16;
   ctx.fillStyle = '#3C9D53'; ctx.fillRect(0, gy, W, H - gy);
   ctx.fillStyle = 'rgba(255,255,255,.05)';
@@ -565,8 +569,6 @@ function drawScene(){
     if (i % 2 === 0) ctx.fillRect(0, y, W, bandH);
     bandH *= 1.22;
   }
-
-  // Pitch markings
   drawMarkings();
 }
 
@@ -574,28 +576,22 @@ function drawMarkings(){
   const cx = W / 2;
   ctx.strokeStyle = 'rgba(255,255,255,.8)'; ctx.lineWidth = 3;
   ctx.lineJoin = 'round';
-  // Goal line
   seg(cx - widthPerYd(0)*30, groundY(0), cx + widthPerYd(0)*30, groundY(0));
-  box(YD.boxW, YD.boxD);   // 18-yard box
-  box(YD.sixW, YD.sixD);   // 6-yard box
-  // Penalty spot
+  box(YD.boxW, YD.boxD);
+  box(YD.sixW, YD.sixD);
   if (YD.spot <= dist + 0.01){
     ctx.fillStyle = 'rgba(255,255,255,.9)';
     ctx.beginPath(); ctx.ellipse(cx, groundY(YD.spot), 6, 2.6, 0, 0, 7); ctx.fill();
   }
-
   function box(wYd, dYd){
-    const d = Math.min(dYd, dist);        // clip lines at the camera plane
+    const d = Math.min(dYd, dist);
     const backHalf = wYd/2 * widthPerYd(0);
     const frontHalf = wYd/2 * widthPerYd(d);
     ctx.beginPath();
     ctx.moveTo(cx - backHalf, groundY(0));
     ctx.lineTo(cx - frontHalf, groundY(d));
-    if (dYd <= dist){
-      ctx.lineTo(cx + frontHalf, groundY(d));
-    } else {
-      ctx.moveTo(cx + frontHalf, groundY(d));
-    }
+    if (dYd <= dist){ ctx.lineTo(cx + frontHalf, groundY(d)); }
+    else { ctx.moveTo(cx + frontHalf, groundY(d)); }
     ctx.lineTo(cx + backHalf, groundY(0));
     ctx.stroke();
   }
@@ -604,7 +600,6 @@ function drawMarkings(){
 
 function drawGoal(){
   const {x, y, w, h, depth:d} = G;
-  // Net
   ctx.strokeStyle = 'rgba(255,255,255,.55)'; ctx.lineWidth = 1.4;
   ctx.beginPath();
   for (let i=0;i<=10;i++){
@@ -617,14 +612,12 @@ function drawGoal(){
     ctx.moveTo(x, ny); ctx.lineTo(x+w, ny);
   }
   ctx.stroke();
-  // Posts
   ctx.lineWidth = 9; ctx.lineCap = 'round'; ctx.strokeStyle = '#fff';
   ctx.beginPath();
   ctx.moveTo(x, y+h); ctx.lineTo(x, y); ctx.lineTo(x+w, y); ctx.lineTo(x+w, y+h);
   ctx.stroke();
   ctx.lineWidth = 3; ctx.strokeStyle = 'rgba(0,0,0,.08)';
   ctx.beginPath(); ctx.moveTo(x+3, y+h); ctx.lineTo(x+3, y+4); ctx.stroke();
-  // Opponent caption
   ctx.fillStyle = 'rgba(255,255,255,.55)';
   ctx.font = '600 11px "Space Grotesk"';
   ctx.textAlign = 'center';
@@ -636,6 +629,12 @@ function drawKeeper(){
   const kx = keeper.cx;
   const ky = G.y + G.h - 6;
   const s = G.h / 90;
+  const dir = Math.sign(keeper.diveTarget - (G.x + G.w/2)) || 1;
+  ctx.fillStyle = 'rgba(0,0,0,.20)';
+  ctx.beginPath();
+  ctx.ellipse(kx + dir * keeper.dive * 16 * s, ky + 3,
+              15 * s * (1 + keeper.dive * 0.9), 4.5 * s, 0, 0, 7);
+  ctx.fill();
   ctx.save();
   ctx.translate(kx, ky);
   if (keeper.pose === 'dive'){
@@ -643,46 +642,64 @@ function drawKeeper(){
     ctx.rotate(dir * lerp(0, 1.15, keeper.dive));
   }
   ctx.scale(s, s);
-  // Body
   ctx.fillStyle = TEAMS[teamIdx].keeper;
   rr(-13, -46, 26, 30, 9);
-  // Head and hair
+  ctx.fillStyle = inkOrWhite(TEAMS[teamIdx].keeper);
+  ctx.font = '700 12px "Space Grotesk"';
+  ctx.textAlign = 'center';
+  ctx.fillText('1', 0, -28);
+  ctx.textAlign = 'left';
   ctx.fillStyle = keeper.skin || '#F7C09B';
   ctx.beginPath(); ctx.arc(0, -56, 11, 0, 7); ctx.fill();
   drawHair(keeper.hairS || 'crop', keeper.hairC || '#5B3A29', 0, -56, 11);
-  // Gloves
   ctx.fillStyle = '#fff';
   const spread = keeper.pose === 'dive' ? 30 : 20;
   ctx.beginPath(); ctx.arc(-spread, -40, 6.5, 0, 7); ctx.fill();
   ctx.beginPath(); ctx.arc(spread, -40, 6.5, 0, 7); ctx.fill();
-  // Shorts + legs
   ctx.fillStyle = TEAMS[teamIdx].shorts; rr(-12, -18, 24, 10, 4);
-  ctx.fillStyle = '#F7C09B'; rr(-10, -9, 7, 9, 3); rr(3, -9, 7, 9, 3);
+  ctx.fillStyle = keeper.skin || '#F7C09B'; rr(-10, -9, 7, 9, 3); rr(3, -9, 7, 9, 3);
+  ctx.fillStyle = keeper.boot || '#171310';
+  rr(-11.5, -3.5, 9, 3.5, 1.6); rr(2.5, -3.5, 9, 3.5, 1.6);
   ctx.restore();
 }
 
 function drawWall(){
   for (const dfn of wall){
-    const s = (G.h / 95) * (dfn.s || 1.25);
+    const pos = toScreen(dist - YD.wall, dfn.l, 0);
+    const s = (G.h / 95) * (pos.ppy / pxPerYdGoal);
+    ctx.fillStyle = `rgba(0,0,0,${0.20 - dfn.jump * 0.08})`;
+    ctx.beginPath();
+    ctx.ellipse(pos.x, pos.gy + 2, 13 * s * dfn.h * (1 - dfn.jump * 0.25),
+                4 * s * dfn.h, 0, 0, 7);
+    ctx.fill();
     ctx.save();
-    ctx.translate(dfn.x, dfn.y - dfn.jump * 34 * s);
+    ctx.translate(pos.x, pos.gy - dfn.jump * 34 * s);
     ctx.scale(s * dfn.h, s * dfn.h);
-    // Shirt
+    // Shirt with short sleeves
     ctx.fillStyle = TEAMS[teamIdx].shirt;
     rr(-11, -48, 22, 26, 8);
+    rr(-16, -47, 6, 8, 3); rr(10, -47, 6, 8, 3);
+    // Jersey number
+    ctx.fillStyle = inkOrWhite(TEAMS[teamIdx].shirt);
+    ctx.font = '700 11px "Space Grotesk"';
+    ctx.textAlign = 'center';
+    ctx.fillText(dfn.num, 0, -31);
+    ctx.textAlign = 'left';
+    // Arms hanging at the sides
+    ctx.fillStyle = dfn.skin;
+    rr(-15.5, -40, 5, 16, 2.5); rr(10.5, -40, 5, 16, 2.5);
+    ctx.beginPath(); ctx.arc(-13, -22.5, 3.8, 0, 7); ctx.fill();
+    ctx.beginPath(); ctx.arc(13, -22.5, 3.8, 0, 7); ctx.fill();
     // Shorts
     ctx.fillStyle = TEAMS[teamIdx].shorts;
     rr(-10, -24, 20, 10, 4);
-    // Legs and socks
+    // Legs, socks, boots
     ctx.fillStyle = dfn.skin;
-    rr(-8, -15, 6, 9, 2); rr(2, -15, 6, 9, 2);
+    rr(-8, -15, 6, 8, 2); rr(2, -15, 6, 8, 2);
     ctx.fillStyle = '#F2F2F2';
-    rr(-8, -6, 6, 6, 2); rr(2, -6, 6, 6, 2);
-    // Arms down the front, hands apart guarding
-    ctx.fillStyle = dfn.skin;
-    rr(-9, -38, 5, 15, 2.5); rr(4, -38, 5, 15, 2.5);
-    ctx.beginPath(); ctx.arc(-6.5, -21, 4, 0, 7); ctx.fill();
-    ctx.beginPath(); ctx.arc(6.5, -21, 4, 0, 7); ctx.fill();
+    rr(-8, -8, 6, 5, 2); rr(2, -8, 6, 5, 2);
+    ctx.fillStyle = dfn.boot;
+    rr(-9.5, -3.5, 8, 3.5, 1.6); rr(1.5, -3.5, 8, 3.5, 1.6);
     // Head and hair
     ctx.fillStyle = dfn.skin;
     ctx.beginPath(); ctx.arc(0, -56, 9.5, 0, 7); ctx.fill();
@@ -695,15 +712,13 @@ function drawBall(){
   ctx.save();
   ctx.translate(ball.x, ball.y);
   const r = BALL.r * ball.scale;
-  // Shadow
   ctx.fillStyle = 'rgba(0,0,0,.18)';
-  ctx.beginPath(); ctx.ellipse(0, r*0.9, r*0.85, r*0.28, 0, 0, 7); ctx.fill();
+  const shDy = Math.max(r*0.9, ball.gy - ball.y);
+  ctx.beginPath(); ctx.ellipse(0, shDy, r*0.85, r*0.28, 0, 0, 7); ctx.fill();
   ctx.rotate(ball.rot);
-  // Ball
   ctx.fillStyle = '#fff';
   ctx.beginPath(); ctx.arc(0, 0, r, 0, 7); ctx.fill();
   ctx.strokeStyle = 'rgba(0,0,0,.1)'; ctx.lineWidth = 2; ctx.stroke();
-  // Pentagons
   ctx.fillStyle = '#25313A';
   penta(0, 0, r*0.34);
   for (let i=0;i<5;i++){
@@ -728,7 +743,6 @@ function drawHair(style, color, cx, cy, r){
     ctx.beginPath(); ctx.arc(cx, cy - r - 2.5, 3.4, 0, 7); ctx.fill();
   }
 }
-
 function penta(cx, cy, r){
   ctx.beginPath();
   for (let i=0;i<5;i++){
@@ -742,23 +756,29 @@ function rr(x,y,w,h,r){
   ctx.beginPath(); ctx.roundRect(x,y,w,h,r); ctx.fill();
 }
 
-function drawAimArrow(tx, ty, curl){
+// Sample the pending shot's true physics for the preview
+function previewPoint(frac){
+  const tr = buildTraj(pend.L, pend.H, 0.7, pend.curl);
+  const at = trajAt(tr, tr.T * frac);
+  return toScreen(dist - at.s, at.l, at.h);
+}
+function drawAimArrow(L, H, curl){
+  const tr = buildTraj(L, H, 0.7, curl);
   const n = 16;
   for (let i=1; i<=n; i++){
-    const t = i/n;
-    const p = trajPoint(t, BALL.homeX, BALL.homeY, tx, ty, 0.7, curl);
-    ctx.fillStyle = `rgba(213,255,63,${lerp(0.95, 0.35, t)})`;
-    ctx.beginPath(); ctx.arc(p.x, p.y, lerp(6, 2.5, t), 0, 7); ctx.fill();
+    const at = trajAt(tr, tr.T * i/n);
+    const p = toScreen(dist - at.s, at.l, at.h);
+    ctx.fillStyle = `rgba(213,255,63,${lerp(0.95, 0.35, i/n)})`;
+    ctx.beginPath(); ctx.arc(p.x, p.y, lerp(6, 2.5, i/n), 0, 7); ctx.fill();
   }
-  // Reticle
+  const end = toScreen(0, L, H);
   ctx.strokeStyle = '#D5FF3F'; ctx.lineWidth = 2.5;
-  ctx.beginPath(); ctx.arc(tx, ty, 13, 0, 7); ctx.stroke();
+  ctx.beginPath(); ctx.arc(end.x, end.y, 13, 0, 7); ctx.stroke();
   ctx.fillStyle = '#D5FF3F';
-  ctx.beginPath(); ctx.arc(tx, ty, 3, 0, 7); ctx.fill();
+  ctx.beginPath(); ctx.arc(end.x, end.y, 3, 0, 7); ctx.fill();
 }
-
 function drawBendHandle(){
-  const hm = trajPoint(0.5, BALL.homeX, BALL.homeY, pend.tx, pend.ty, 0.7, pend.curl);
+  const hm = previewPoint(0.5);
   ctx.strokeStyle = '#4DD0E1'; ctx.lineWidth = 3;
   ctx.beginPath(); ctx.arc(hm.x, hm.y, 15, 0, 7); ctx.stroke();
   ctx.fillStyle = '#4DD0E1';
@@ -775,16 +795,27 @@ function drawMeter(){
   const x = (W - w)/2, y = H*0.885;
   ctx.fillStyle = 'rgba(13,20,28,.78)';
   rr(x-4, y-4, w+8, h+8, 12);
-  // Sweet spot band
-  ctx.fillStyle = 'rgba(213,255,63,.22)';
-  rr(x + w*0.62, y, w*0.28, h, 6);
-  // Fill: volt in range, red when overhit
-  ctx.fillStyle = meter.p > DIFF[diff].overhit ? '#FF5A4E' : '#D5FF3F';
-  rr(x, y, Math.max(6, w*meter.p), h, 6);
+  if (phase === 'set'){
+    ctx.fillStyle = 'rgba(255,255,255,.85)';
+    ctx.font = '600 11px "Space Grotesk"';
+    ctx.textAlign = 'center';
+    ctx.fillText('TAP TO START', W/2, y + h - 4);
+    ctx.textAlign = 'left';
+    return;
+  }
+  // High power warning band (error grows with power)
+  ctx.fillStyle = 'rgba(255,90,78,.25)';
+  rr(x + w*0.88, y, w*0.12, h, 6);
+  // Accuracy mark for the downswing
+  ctx.fillStyle = phase === 'acc' ? '#4DD0E1' : 'rgba(77,208,225,.4)';
+  rr(x + w*ACC_MARK - 2, y - 3, 4, h + 6, 2);
+  ctx.fillStyle = '#D5FF3F';
+  rr(x, y, Math.max(6, w*clamp(meter.p,0,1)), h, 6);
   ctx.fillStyle = 'rgba(255,255,255,.85)';
   ctx.font = '600 11px "Space Grotesk"';
   ctx.textAlign = 'center';
-  ctx.fillText('TAP TO SHOOT', W/2, y - 12);
+  ctx.fillText(phase === 'power' ? 'TAP TO SET POWER' : 'TAP AT THE MARK', W/2, y - 12);
+  ctx.textAlign = 'left';
 }
 
 function drawSwipeTrail(){
@@ -833,42 +864,62 @@ function frame(now){
     meter.p += meter.dir * DIFF[diff].meter * dt;
     if (meter.p > 1){ meter.p = 1; meter.dir = -1; }
     if (meter.p < 0){ meter.p = 0; meter.dir = 1; }
+  } else if (phase === 'acc'){
+    meter.p -= DIFF[diff].meter * dt;
+    if (meter.p < -0.02) fireShot(0.4);        // let it run past: shank
   }
 
   if (phase === 'flight'){
-    shot.t += dt / shot.dur;
-    const t = clamp(shot.t, 0, 1);
-    if (t > keeper.diveDelay && keeper.pose === 'set') keeper.pose = 'dive';
+    shot.tau += dt;
+    const at = trajAt(shot, shot.tau);
+    const prog = at.s / dist;
+    // Keeper launches after his reaction time
+    if (shot.tau > DIFF[diff].kReact && keeper.pose === 'set') keeper.pose = 'dive';
     if (keeper.pose === 'dive'){
-      keeper.dive = clamp(keeper.dive + dt * DIFF[diff].diveSpd, 0, 1);
-      keeper.cx = lerp(keeper.cx, keeper.diveTarget, keeper.dive*0.25);
+      keeper.dive = clamp(keeper.dive + dt * DIFF[diff].kDive * 0.45, 0, 1);
+      keeper.cx = lerp(keeper.cx, keeper.diveTarget, keeper.dive * 0.3);
     }
     for (const d of wall){
-      if (t > d.jumpAt) d.jump = clamp(d.jump + dt*6, 0, 1);
+      if (at.s > d.jumpAt) d.jump = clamp(d.jump + dt*6, 0, 1);
     }
-    // Wall contact happens mid-flight, at the ten-yard plane
-    const wallT = YD.wall / dist;
-    if (mode === 'freekick' && !shot.wallChecked && t >= wallT){
+    // Wall contact at the ten-yard plane, in yards
+    if (mode === 'freekick' && !shot.wallChecked && at.s >= YD.wall){
       shot.wallChecked = true;
-      if (wallBlocked()){
-        const p = pathPoint(wallT);
-        ball.x = p.x; ball.y = p.y;
-        ball.scale = lerp(1, 0.34, wallT);
-        finishShot('wall');
+      const tw = YD.wall / shot.vx;
+      const w_ = trajAt(shot, tw);
+      for (const d of wall){
+        if (Math.abs(w_.l - d.l) < DIFF[diff].wallW){
+          const jumped = d.jump > 0.4;
+          const top = jumped ? 2.55 : 1.98;
+          const bottom = jumped ? 0.5 : 0;
+          if (w_.h > bottom && w_.h < top){
+            const p = toScreen(dist - w_.s, w_.l, w_.h);
+            ball.x = p.x; ball.y = p.y; ball.gy = p.gy;
+            ball.scale = p.ppy / widthPerYd(dist);
+            finishShot('wall');
+            break;
+          }
+        }
       }
     }
-    if (phase === 'flight' && shot.short && t >= 0.8){
-      const p = pathPoint(0.8);
-      ball.x = p.x; ball.y = p.y;
-      ball.scale = lerp(1, 0.34, 0.8);
-      finishShot('short');
-    }
     if (phase === 'flight'){
-      const p = pathPoint(t);
-      ball.x = p.x; ball.y = p.y;
-      ball.scale = lerp(1, 0.34, t);
-      ball.rot += dt * 14 * shot.power;
-      if (shot.t >= 1) resolveEnd();
+      // Under-powered balls physically hit the ground before the goal
+      if (at.falling && prog < 0.90){
+        const p = toScreen(dist - at.s, at.l, 0);
+        ball.x = p.x; ball.y = p.y; ball.gy = p.gy;
+        ball.scale = p.ppy / widthPerYd(dist);
+        finishShot('short');
+      } else if (prog >= 1){
+        const p = toScreen(0, at.l, at.h);
+        ball.x = p.x; ball.y = p.y; ball.gy = p.gy;
+        ball.scale = p.ppy / widthPerYd(dist);
+        resolveEnd(at.l, at.h);
+      } else {
+        const p = toScreen(dist - at.s, at.l, at.h);
+        ball.x = p.x; ball.y = p.y; ball.gy = p.gy;
+        ball.scale = p.ppy / widthPerYd(dist);
+        ball.rot += dt * 14 * shot.power;
+      }
     }
   } else if (phase === 'rebound'){
     reb.t += dt;
@@ -876,6 +927,7 @@ function frame(now){
     const base = lerp(reb.y0, reb.ground, clamp(reb.t * 2.4, 0, 1));
     const bounce = reb.amp * Math.abs(Math.sin(6.5 * reb.t)) * Math.exp(-2.8 * reb.t);
     ball.y = base - bounce;
+    ball.gy = base + BALL.r * ball.scale * 0.5;
     ball.scale = Math.max(0.15, reb.s0 + reb.grow * Math.min(reb.t, 0.8));
     ball.rot += reb.vx * dt * 0.02;
   }
@@ -884,8 +936,12 @@ function frame(now){
   drawWall();
   drawBall();
   if (control === 'arrow'){
-    if (phase === 'aim' && aim.active) drawAimArrow(aim.tx, aim.ty, curlFor(aim.tx));
-    if (phase === 'power'){ drawAimArrow(pend.tx, pend.ty, pend.curl); drawBendHandle(); drawMeter(); }
+    if (phase === 'aim' && aim.active){
+      const w = screenToWorld(aim.tx, aim.ty);
+      drawAimArrow(w.L, w.H, clamp(w.L / 6, -1, 1) * clamp((dist - 10) / 16, 0.1, 1));
+    }
+    if (phase === 'set'){ drawAimArrow(pend.L, pend.H, pend.curl); drawBendHandle(); drawMeter(); }
+    if (phase === 'power' || phase === 'acc'){ drawAimArrow(pend.L, pend.H, pend.curl); drawMeter(); }
   } else {
     drawSwipeTrail();
   }
@@ -895,29 +951,7 @@ function frame(now){
   requestAnimationFrame(frame);
 }
 
-// ---------- Buttons ----------
-const modeBtn = document.getElementById('modeBtn');
-modeBtn.addEventListener('click', () => {
-  mode = mode === 'penalty' ? 'freekick' : 'penalty';
-  modeBtn.textContent = mode === 'penalty' ? 'Penalties' : 'Free Kicks';
-  streak = 0;
-  document.getElementById('streak').textContent = 0;
-  resetRound();
-});
-
-const ctlBtn = document.getElementById('ctlBtn');
-const hint = document.getElementById('hint');
-ctlBtn.addEventListener('click', () => {
-  control = control === 'arrow' ? 'swipe' : 'arrow';
-  ctlBtn.textContent = control === 'arrow' ? 'Aim: Arrow' : 'Aim: Swipe';
-  hint.textContent = control === 'arrow'
-    ? 'Drag to aim · release · tap to set power'
-    : 'Swipe to shoot · curve your swipe to bend it';
-  if (phase === 'aim' || phase === 'power'){ phase = 'aim'; aim.active = false; touch = null; }
-});
-
 // ---------- Players & leaderboard ----------
-// Uses the artifact storage API when available, otherwise the browser's local storage
 const store = {
   async get(k){
     if (window.storage && typeof window.storage.get === 'function'){
@@ -977,6 +1011,25 @@ document.getElementById('switchBtn').addEventListener('click', () => {
   if (lastName) nameInput.value = lastName;
 })();
 
+// ---------- Buttons ----------
+const modeBtn = document.getElementById('modeBtn');
+modeBtn.addEventListener('click', () => {
+  mode = mode === 'penalty' ? 'freekick' : 'penalty';
+  modeBtn.textContent = mode === 'penalty' ? 'Penalties' : 'Free Kicks';
+  streak = 0;
+  document.getElementById('streak').textContent = 0;
+  resetRound();
+});
+const ctlBtn = document.getElementById('ctlBtn');
+const hint = document.getElementById('hint');
+ctlBtn.addEventListener('click', () => {
+  control = control === 'arrow' ? 'swipe' : 'arrow';
+  ctlBtn.textContent = control === 'arrow' ? 'Aim: Arrow' : 'Aim: Swipe';
+  hint.textContent = control === 'arrow'
+    ? 'Tap to aim · start · power · accuracy'
+    : 'Swipe to shoot · curve your swipe to bend it';
+  if (phase !== 'flight' && phase !== 'rebound'){ phase = 'aim'; aim.active = false; touch = null; bendDrag = false; }
+});
 const diffBtn = document.getElementById('diffBtn');
 diffBtn.addEventListener('click', () => {
   const order = ['easy','medium','hard'];
