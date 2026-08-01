@@ -464,10 +464,30 @@ function startShot(L, H, power, curl, miss){
   phase = 'flight';
   sKick();
 
-  // Keeper reacts to the true final position after his reaction time
-  const kx = toScreen(0, clamp(L, -4, 4), 0).x;
-  keeper.diveTarget = clamp(kx, G.x + 20, G.x + G.w - 20);
-  keeper.pose = 'set'; keeper.dive = 0;
+  // Deterministic keeper, decided at kick time: reach = base + dive speed x
+  // time after reaction. The wall screens his view on free kicks; curl adds
+  // deception; a dive has a maximum extension unless the ball hangs long
+  // enough for him to reposition.
+  const kd = DIFF[diff];
+  shot.sight = mode === 'freekick' ? 0.22 : 0;
+  const tAvail = Math.max(0, shot.T - kd.kReact - shot.sight);
+  let reach = 0.55 + kd.kDive * tAvail;
+  if (tAvail <= 0.6) reach = Math.min(reach, kd.diveCap);
+  reach *= 1 - 0.22 * Math.min(1, Math.abs(curl));
+  shot.reachYd = reach;
+  const willBeOnTarget = Math.abs(L) < YD.goalW/2 - 0.16 && H < YD.goalH - 0.13;
+  const eff = Math.hypot(L, Math.max(0, H - 0.9) * 1.15);
+  shot.saved = willBeOnTarget && eff < reach;
+
+  // Dive choreography: correct side, but a beaten keeper visibly falls short
+  const dirL = Math.sign(L) || 1;
+  let targetLyd;
+  if (shot.saved) targetLyd = clamp(L, -4, 4);
+  else if (willBeOnTarget) targetLyd = dirL * Math.min(reach, Math.max(0.2, Math.abs(L) - 0.6));
+  else targetLyd = dirL * Math.min(reach, 2);
+  keeper.diveTarget = clamp(toScreen(0, targetLyd, 0).x, G.x + 20, G.x + G.w - 20);
+  keeper.startCx = keeper.cx;
+  keeper.pose = 'set'; keeper.dive = 0; keeper.diveT0 = 0;
 }
 
 function resolveEnd(L, h){
@@ -478,18 +498,7 @@ function resolveEnd(L, h){
 
   const onTarget = Math.abs(L) < YD.goalW/2 - 0.16 && h < YD.goalH - 0.13;
   if (!onTarget) return finishShot('miss');
-
-  // Deterministic keeper: reach = base + dive speed x time after reaction.
-  // The wall screens his view on free kicks; curl adds deception; a dive
-  // has a maximum extension unless the ball hangs long enough to reposition.
-  const kd = DIFF[diff];
-  const sight = mode === 'freekick' ? 0.22 : 0;
-  const tAvail = Math.max(0, shot.T - kd.kReact - sight);
-  let reach = 0.55 + kd.kDive * tAvail;
-  if (tAvail <= 0.6) reach = Math.min(reach, kd.diveCap);
-  reach *= 1 - 0.22 * Math.min(1, Math.abs(shot.curl));
-  const eff = Math.hypot(L, Math.max(0, h - 0.9) * 1.15);
-  finishShot(eff < reach ? 'save' : 'goal');
+  finishShot(shot.saved ? 'save' : 'goal');
 }
 
 function finishShot(outcome){
@@ -929,11 +938,18 @@ function frame(now){
     shot.tau += dt;
     const at = trajAt(shot, shot.tau);
     const prog = at.s / dist;
-    // Keeper launches after his reaction time
-    if (shot.tau > DIFF[diff].kReact && keeper.pose === 'set') keeper.pose = 'dive';
+    // Keeper launches after reaction (plus the wall's screening on free
+    // kicks) and reaches full stretch exactly as the ball arrives
+    const launchAt = DIFF[diff].kReact + shot.sight;
+    if (shot.tau > launchAt && keeper.pose === 'set'){
+      keeper.pose = 'dive';
+      keeper.diveT0 = shot.tau;
+    }
     if (keeper.pose === 'dive'){
-      keeper.dive = clamp(keeper.dive + dt * DIFF[diff].kDive * 0.45, 0, 1);
-      keeper.cx = lerp(keeper.cx, keeper.diveTarget, keeper.dive * 0.3);
+      const span = Math.max(0.15, shot.T - keeper.diveT0);
+      keeper.dive = clamp((shot.tau - keeper.diveT0) / span, 0, 1);
+      const ease = 1 - (1 - keeper.dive) * (1 - keeper.dive);
+      keeper.cx = lerp(keeper.startCx, keeper.diveTarget, ease);
     }
     for (const d of wall){
       if (at.s > d.jumpAt) d.jump = clamp(d.jump + dt*6, 0, 1);
