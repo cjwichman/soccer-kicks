@@ -68,7 +68,7 @@
 <div id="wrap"><canvas id="game"></canvas></div>
 <div id="hud">
   <div class="bug"><div class="lbl">Goals</div><div class="val" id="score">0</div></div>
-  <div id="midBtns"><button id="modeBtn">Free Kicks ⟶</button><button id="boardBtn" aria-label="Leaderboard">🏆</button></div>
+  <div id="midBtns"><button id="modeBtn">Penalties</button><button id="boardBtn" aria-label="Leaderboard">🏆</button></div>
   <div class="bug"><div class="lbl" id="streakLbl">Streak</div><div class="val" id="streak">0</div></div>
 </div>
 <button id="ctlBtn">Aim: Arrow</button>
@@ -146,6 +146,15 @@ function widthPerYd(yd){
 }
 
 // ---------- State ----------
+const TEAMS = [
+  { name:'BRAZIL',    shirt:'#FFDC02', shorts:'#16407C', keeper:'#57C4E5' },
+  { name:'MOROCCO',   shirt:'#C1272D', shorts:'#006233', keeper:'#E8E8E8' },
+  { name:'SPAIN',     shirt:'#AA151B', shorts:'#1B2A5B', keeper:'#7FE080' },
+  { name:'ARGENTINA', shirt:'#5FD0E8', shorts:'#1E2A32', keeper:'#F2C230' },
+  { name:'BELGIUM',   shirt:'#ED2939', shorts:'#1A1A1A', keeper:'#FFD23F' }
+];
+let teamIdx = 0;
+
 let mode = 'penalty';           // 'penalty' | 'freekick'
 let diff = 'easy';              // 'easy' | 'hard'
 const DIFF = {
@@ -199,6 +208,7 @@ function pathPoint(t){
 function resetRound(){
   phase = 'aim';
   aim.active = false;
+  teamIdx = (teamIdx + 1) % TEAMS.length;
   if (mode === 'freekick'){
     dist = rand(DIFF[diff].fkMin, DIFF[diff].fkMax);
     const side = Math.random() < 0.5 ? -1 : 1;
@@ -585,6 +595,12 @@ function drawGoal(){
   ctx.stroke();
   ctx.lineWidth = 3; ctx.strokeStyle = 'rgba(0,0,0,.08)';
   ctx.beginPath(); ctx.moveTo(x+3, y+h); ctx.lineTo(x+3, y+4); ctx.stroke();
+  // Opponent caption
+  ctx.fillStyle = 'rgba(255,255,255,.55)';
+  ctx.font = '600 11px "Space Grotesk"';
+  ctx.textAlign = 'center';
+  ctx.fillText('VS ' + TEAMS[teamIdx].name, W/2, y - d - 14);
+  ctx.textAlign = 'left';
 }
 
 function drawKeeper(){
@@ -599,7 +615,7 @@ function drawKeeper(){
   }
   ctx.scale(s, s);
   // Body
-  ctx.fillStyle = '#FFD23F';
+  ctx.fillStyle = TEAMS[teamIdx].keeper;
   rr(-13, -46, 26, 30, 9);
   // Head
   ctx.fillStyle = '#F7C09B';
@@ -613,7 +629,7 @@ function drawKeeper(){
   ctx.beginPath(); ctx.arc(-spread, -40, 6.5, 0, 7); ctx.fill();
   ctx.beginPath(); ctx.arc(spread, -40, 6.5, 0, 7); ctx.fill();
   // Shorts + legs
-  ctx.fillStyle = '#2E5FA3'; rr(-12, -18, 24, 10, 4);
+  ctx.fillStyle = TEAMS[teamIdx].shorts; rr(-12, -18, 24, 10, 4);
   ctx.fillStyle = '#F7C09B'; rr(-10, -9, 7, 9, 3); rr(3, -9, 7, 9, 3);
   ctx.restore();
 }
@@ -624,7 +640,7 @@ function drawWall(){
     ctx.save();
     ctx.translate(dfn.x, dfn.y - dfn.jump * 34 * s);
     ctx.scale(s * dfn.h, s * dfn.h);
-    ctx.fillStyle = '#E5544B';
+    ctx.fillStyle = TEAMS[teamIdx].shirt;
     rr(-11, -44, 22, 28, 8);
     ctx.fillStyle = '#F7C09B';
     ctx.beginPath(); ctx.arc(0, -52, 9.5, 0, 7); ctx.fill();
@@ -633,7 +649,7 @@ function drawWall(){
     // Arms crossed low
     ctx.fillStyle = '#F7C09B';
     rr(-9, -26, 18, 7, 3.5);
-    ctx.fillStyle = '#243B53'; rr(-10, -16, 20, 9, 4);
+    ctx.fillStyle = TEAMS[teamIdx].shorts; rr(-10, -16, 20, 9, 4);
     ctx.fillStyle = '#F7C09B'; rr(-8, -7, 6, 7, 3); rr(2, -7, 6, 7, 3);
     ctx.restore();
   }
@@ -830,7 +846,7 @@ function frame(now){
 const modeBtn = document.getElementById('modeBtn');
 modeBtn.addEventListener('click', () => {
   mode = mode === 'penalty' ? 'freekick' : 'penalty';
-  modeBtn.textContent = mode === 'penalty' ? 'Free Kicks ⟶' : 'Penalties ⟶';
+  modeBtn.textContent = mode === 'penalty' ? 'Penalties' : 'Free Kicks';
   streak = 0;
   document.getElementById('streak').textContent = 0;
   resetRound();
