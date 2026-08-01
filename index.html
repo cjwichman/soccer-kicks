@@ -206,11 +206,13 @@ let mode = 'freekick';          // 'penalty' | 'freekick'
 let diff = 'easy';
 // Keeper skill is reaction time + dive speed; outcomes are deterministic
 const DIFF = {
-  easy:   { kReact: 0.30, kDive: 5.0, diveCap: 2.6, meter: 1.0, wallW: 0.30, fkMin: 16, fkMax: 22 },
-  medium: { kReact: 0.22, kDive: 6.5, diveCap: 3.2, meter: 1.4, wallW: 0.36, fkMin: 17, fkMax: 24 },
-  hard:   { kReact: 0.14, kDive: 8.5, diveCap: 3.8, meter: 2.0, wallW: 0.44, fkMin: 20, fkMax: 28 }
+  easy:   { kReact: 0.30, kDive: 5.0, diveCap: 2.6, chipReach: 1.6, meter: 1.0, wallW: 0.30, fkMin: 16, fkMax: 22 },
+  medium: { kReact: 0.22, kDive: 6.5, diveCap: 3.2, chipReach: 2.4, meter: 1.4, wallW: 0.36, fkMin: 17, fkMax: 24 },
+  hard:   { kReact: 0.14, kDive: 8.5, diveCap: 3.8, chipReach: 3.2, meter: 2.0, wallW: 0.44, fkMin: 20, fkMax: 28 }
 };
 const ACC_MARK = 0.15;          // accuracy tick position on the downswing
+const BEND_F = 0.28;            // bend handle position along the flight
+const CHIP_PW = 0.62;           // below this power the strike is a lofted chip
 
 let control = 'arrow';          // 'arrow' | 'swipe'
 let score = 0, streak = 0;
@@ -248,12 +250,23 @@ function solveLaunch(v, d, H){
 }
 
 // Build full trajectory params for a target; falls short if unreachable
-function buildTraj(L, H, power, curl){
-  const v = lerp(17, 38, power);
-  const sol = solveLaunch(v, dist, H);
-  const short = !sol;
-  const th = short ? 0.61 : sol.th;
-  const T = short ? dist / (v * Math.cos(th)) : sol.T;
+function buildTraj(L, H, power, curl, chip){
+  const g = G_YD;
+  let v = lerp(17, 38, power);
+  let th, short = false;
+  if (chip){
+    // Chip: angle set by technique (deeper in yellow = steeper), speed solved
+    // as the minimum that drops the ball exactly on the aim point
+    const pf = clamp((power - 0.35) / (CHIP_PW - 0.35), 0, 1);
+    th = lerp(0.85, 0.6, pf);
+    v = Math.sqrt(g * dist * dist /
+        (2 * Math.cos(th) * Math.cos(th) * (dist * Math.tan(th) - H)));
+  } else {
+    const disc = v*v*v*v - g*(g*dist*dist + 2*H*v*v);
+    short = disc < 0;
+    th = short ? 0.61 : Math.atan((v*v - Math.sqrt(disc)) / (g*dist));
+  }
+  const T = dist / (v * Math.cos(th));
   const ac = curl * 14;                                    // Magnus, yd/s^2
   const vl0 = (L - 0.5 * ac * T * T) / T;                  // arrive on target
   return { v, th, T, ac, vl0, short,
@@ -344,10 +357,11 @@ function onDown(e){
 function onMove(e){
   const p = getPos(e);
   if (phase === 'set' && bendDrag){
-    // The handle sits at the curve apex; drag maps straight to curl
-    const straightMidX = (BALL.homeX + pend.tx) / 2;
-    const offYd = (p.x - straightMidX) / widthPerYd(dist / 2);
-    pend.curl = clamp(-offYd * 8 / (14 * pend.prevT * pend.prevT), -1.15, 1.15);
+    // Drag maps straight to curl via the path's deviation at the handle depth
+    const straightX = lerp(BALL.homeX, pend.tx, BEND_F);
+    const offYd = (p.x - straightX) / widthPerYd(dist * (1 - BEND_F));
+    const k = 14 * pend.prevT * pend.prevT * BEND_F * (1 - BEND_F) / 2;
+    pend.curl = clamp(-offYd / k, -1.15, 1.15);
     e.preventDefault(); return;
   }
   if (phase !== 'aim') return;
@@ -391,9 +405,10 @@ function swipeRelease(e){
   const swipeLen = Math.hypot(dx, dy);
   const dtms = Math.max(1, p1.t - p0.t);
   if (swipeLen < 40 || dy > -20) return;
-  const power = clamp((swipeLen / dtms) / 1.6, 0.35, 1);
-  const targetX = G.x + G.w/2 + clamp(dx / swipeLen, -1, 1) * G.w * 0.75;
-  const targetY = lerp(G.y + G.h * 0.92, G.y + G.h * 0.18, power);
+  const power = clamp(0.35 + (swipeLen / dtms) / 3.2, 0.35, 0.86);
+  const tSide = clamp(dx / swipeLen, -1, 1);
+  const targetX = G.x + G.w/2 + Math.sign(tSide) * Math.pow(Math.abs(tSide), 1.4) * G.w * 0.55;
+  const targetY = lerp(G.y + G.h * 0.9, G.y + G.h * 0.2, (power - 0.35) / 0.51);
   let curl = 0;
   const nx = -dy / swipeLen, ny = dx / swipeLen;
   for (const p of pts){
@@ -401,7 +416,7 @@ function swipeRelease(e){
     if (Math.abs(d) > Math.abs(curl)) curl = d;
   }
   const w = screenToWorld(targetX, targetY);
-  startShot(w.L, w.H, power, clamp(curl / 90, -1, 1), 0.12);
+  startShot(w.L, w.H, power, clamp(curl / 55, -1, 1), 0.1);
   e.preventDefault();
 }
 // Meter taps register anywhere except real controls
@@ -411,7 +426,7 @@ function powerTap(e){
   if (t && t.closest && t.closest('button, input, .overlay')) return;
   const p = getPos(e);
   if (phase === 'set'){
-    const hm = previewPoint(0.5);
+    const hm = previewPoint(BEND_F);
     if (Math.hypot(p.x - hm.x, p.y - hm.y) < 36){ bendDrag = true; }
     else { meter.p = 0; meter.dir = 1; phase = 'power'; }
   } else if (phase === 'power'){
@@ -460,8 +475,9 @@ function startShot(L, H, power, curl, miss){
       L += dirL * rand(0.5, 1.5);
     }
   }
-  const tr = buildTraj(L, H, power, curl);
-  Object.assign(shot, tr, { L, H, curl, power, tau: 0, wallChecked: false });
+  const chip = power < CHIP_PW;
+  const tr = buildTraj(L, H, power, curl, chip);
+  Object.assign(shot, tr, { L, H, curl, power, chip, tau: 0, wallChecked: false });
   phase = 'flight';
   sKick();
 
@@ -470,10 +486,13 @@ function startShot(L, H, power, curl, miss){
   // deception; a dive has a maximum extension unless the ball hangs long
   // enough for him to reposition.
   const kd = DIFF[diff];
-  shot.sight = mode === 'freekick' ? 0.22 : 0;
+  // Chips read as clearances at first, so the keeper hesitates — and a ball
+  // dropping from above is much harder to claim than one driven at him
+  shot.sight = (mode === 'freekick' ? 0.22 : 0) + (chip ? 0.35 : 0);
   const tAvail = Math.max(0, shot.T - kd.kReact - shot.sight);
   let reach = 0.55 + kd.kDive * tAvail;
   if (tAvail <= 0.6) reach = Math.min(reach, kd.diveCap);
+  if (chip) reach = kd.chipReach;   // backpedal-and-claim radius, not a dive
   reach *= 1 - 0.22 * Math.min(1, Math.abs(curl));
   shot.reachYd = reach;
   const willBeOnTarget = Math.abs(L) < YD.goalW/2 - 0.16 && H < YD.goalH - 0.13;
@@ -815,7 +834,7 @@ function drawAimArrow(L, H, curl){
   ctx.beginPath(); ctx.arc(end.x, end.y, 3, 0, 7); ctx.fill();
 }
 function drawBendHandle(){
-  const hm = previewPoint(0.5);
+  const hm = previewPoint(BEND_F);
   ctx.strokeStyle = '#4DD0E1'; ctx.lineWidth = 3;
   ctx.beginPath(); ctx.arc(hm.x, hm.y, 15, 0, 7); ctx.stroke();
   ctx.fillStyle = '#4DD0E1';
@@ -842,14 +861,25 @@ function drawMeter(){
   }
   // Track gradient: weak yellow, ideal green, overhit red
   const grad = ctx.createLinearGradient(x, 0, x + w, 0);
-  grad.addColorStop(0.00, '#E3C94F');
-  grad.addColorStop(0.55, '#9FD44C');
+  grad.addColorStop(0.00, '#E8C84A');
+  grad.addColorStop(0.40, '#E8C84A');
+  grad.addColorStop(0.52, '#9FD44C');
   grad.addColorStop(0.65, '#3FC463');
   grad.addColorStop(0.85, '#3FC463');
   grad.addColorStop(0.90, '#FF5A4E');
   grad.addColorStop(1.00, '#FF5A4E');
   ctx.fillStyle = grad;
   rr(x, y, w, h, 7);
+  // Chip/drive divider and zone labels
+  const chipX = (CHIP_PW - 0.35) / 0.65;
+  ctx.fillStyle = 'rgba(13,20,28,.4)';
+  rr(x + w*chipX - 1, y, 2, h, 1);
+  ctx.fillStyle = 'rgba(13,20,28,.55)';
+  ctx.font = '700 8px "Space Grotesk"';
+  ctx.textAlign = 'center';
+  ctx.fillText('CHIP', x + w*0.2, y + h/2 + 3);
+  ctx.fillText('DRIVE', x + w*0.75, y + h/2 + 3);
+  ctx.textAlign = 'left';
   // Ideal power zone bracket
   ctx.strokeStyle = 'rgba(255,255,255,.9)'; ctx.lineWidth = 1.5;
   ctx.beginPath(); ctx.roundRect(x + w*0.65, y - 2, w*0.20, h + 4, 5); ctx.stroke();
