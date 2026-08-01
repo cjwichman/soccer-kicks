@@ -245,13 +245,7 @@ function reticleFrom(p){
   };
 }
 function onDown(e){
-  if (phase === 'power'){
-    const p = getPos(e);
-    const hm = trajPoint(0.5, BALL.homeX, BALL.homeY, pend.tx, pend.ty, 0.7, pend.curl);
-    if (Math.hypot(p.x - hm.x, p.y - hm.y) < 36) bendDrag = true;
-    else firePower();
-    e.preventDefault(); return;
-  }
+  if (phase === 'power') return;   // handled at the document level
   if (phase !== 'aim') return;
   const p = getPos(e);
   if (control === 'swipe'){
@@ -328,6 +322,18 @@ function swipeRelease(e){
   startShot(targetX, targetY, power, curl);
   e.preventDefault();
 }
+function powerTap(e){
+  if (phase !== 'power') return;
+  const t = e.target;
+  if (t && t.closest && t.closest('button, input, .overlay')) return;
+  const p = getPos(e);
+  const hm = trajPoint(0.5, BALL.homeX, BALL.homeY, pend.tx, pend.ty, 0.7, pend.curl);
+  if (Math.hypot(p.x - hm.x, p.y - hm.y) < 36) bendDrag = true;
+  else firePower();
+  e.preventDefault();
+}
+document.addEventListener('touchstart', powerTap, {passive:false});
+document.addEventListener('mousedown', powerTap);
 canvas.addEventListener('touchstart', onDown, {passive:false});
 canvas.addEventListener('touchmove', onMove, {passive:false});
 canvas.addEventListener('touchend', onUp, {passive:false});
