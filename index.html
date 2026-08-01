@@ -157,7 +157,13 @@ function axisX(sg){
 function toScreen(sg, l, h){
   const ppy = widthPerYd(sg);
   const gy = groundY(sg);
-  return { x: axisX(sg) + l * ppy, y: gy - h * ppy, gy, ppy };
+  return { x: axisX(sg) + l * ppy, y: gy - h * ppy, gy, ppy, sg };
+}
+// Rendered ball radius: chunky at the foot, near-true world size downfield
+function ballRadiusAt(sg){
+  const worldR = 0.17 * widthPerYd(sg);
+  const t = clamp((1 - sg / dist) * 2.0, 0, 1);
+  return Math.max(6, lerp(BALL.r, worldR, t));
 }
 function screenToWorld(tx, ty){
   return {
@@ -407,6 +413,7 @@ function powerTap(e){
     else { meter.p = 0; meter.dir = 1; phase = 'power'; }
   } else if (phase === 'power'){
     pend.power = lerp(0.35, 1, meter.p);
+    pend.meterP = meter.p;
     meter.dir = -1;
     phase = 'acc';
   } else {
@@ -435,6 +442,21 @@ function startShot(L, H, power, curl, miss){
   const err = (0.22 + 1.4 * miss) * (0.35 + power * 0.95) * (1 + Math.abs(curl) * 0.7);
   L += gauss() * err;
   H = Math.max(0.05, H + gauss() * err * 0.55);
+  // Overhit: a strike in the red zone balloons — guaranteed well wide, well
+  // high, or both, and worse the deeper into the red the tap landed
+  const pNorm = (power - 0.35) / 0.65;
+  if (pNorm > 0.88){
+    const over = clamp((pNorm - 0.88) / 0.12, 0, 1);
+    const goWide = Math.random() < 0.6;
+    const dirL = Math.sign(L) || (Math.random() < 0.5 ? -1 : 1);
+    if (goWide){
+      L = dirL * (4.5 + over * 2.2 + Math.abs(gauss()) * 0.8);
+      if (Math.random() < 0.4) H += 1.0 + over;
+    } else {
+      H = 2.9 + over * 1.8 + Math.abs(gauss()) * 0.6;
+      L += dirL * rand(0.5, 1.5);
+    }
+  }
   const tr = buildTraj(L, H, power, curl);
   Object.assign(shot, tr, { L, H, curl, power, tau: 0, wallChecked: false });
   phase = 'flight';
@@ -791,30 +813,60 @@ function drawBendHandle(){
 }
 
 function drawMeter(){
-  const w = Math.min(W*0.6, 280), h = 16;
-  const x = (W - w)/2, y = H*0.885;
+  const w = Math.min(W*0.64, 300), h = 18;
+  const x = (W - w)/2, y = H*0.88;
   ctx.fillStyle = 'rgba(13,20,28,.78)';
-  rr(x-4, y-4, w+8, h+8, 12);
+  rr(x-5, y-5, w+10, h+10, 13);
   if (phase === 'set'){
     ctx.fillStyle = 'rgba(255,255,255,.85)';
     ctx.font = '600 11px "Space Grotesk"';
     ctx.textAlign = 'center';
-    ctx.fillText('TAP TO START', W/2, y + h - 4);
+    ctx.fillText('TAP TO START', W/2, y + h - 5);
     ctx.textAlign = 'left';
     return;
   }
-  // High power warning band (error grows with power)
-  ctx.fillStyle = 'rgba(255,90,78,.25)';
-  rr(x + w*0.88, y, w*0.12, h, 6);
-  // Accuracy mark for the downswing
-  ctx.fillStyle = phase === 'acc' ? '#4DD0E1' : 'rgba(77,208,225,.4)';
-  rr(x + w*ACC_MARK - 2, y - 3, 4, h + 6, 2);
-  ctx.fillStyle = '#D5FF3F';
-  rr(x, y, Math.max(6, w*clamp(meter.p,0,1)), h, 6);
+  // Track gradient: weak yellow, ideal green, overhit red
+  const grad = ctx.createLinearGradient(x, 0, x + w, 0);
+  grad.addColorStop(0.00, '#E3C94F');
+  grad.addColorStop(0.55, '#9FD44C');
+  grad.addColorStop(0.65, '#3FC463');
+  grad.addColorStop(0.85, '#3FC463');
+  grad.addColorStop(0.90, '#FF5A4E');
+  grad.addColorStop(1.00, '#FF5A4E');
+  ctx.fillStyle = grad;
+  rr(x, y, w, h, 7);
+  // Ideal power zone bracket
+  ctx.strokeStyle = 'rgba(255,255,255,.9)'; ctx.lineWidth = 1.5;
+  ctx.beginPath(); ctx.roundRect(x + w*0.65, y - 2, w*0.20, h + 4, 5); ctx.stroke();
+  // Accuracy mark (the downswing target)
+  ctx.fillStyle = phase === 'acc' ? '#4DD0E1' : 'rgba(77,208,225,.45)';
+  rr(x + w*ACC_MARK - 2.5, y - 5, 5, h + 10, 2.5);
+  if (phase === 'acc'){
+    ctx.beginPath();
+    ctx.moveTo(x + w*ACC_MARK, y - 8);
+    ctx.lineTo(x + w*ACC_MARK - 5, y - 15);
+    ctx.lineTo(x + w*ACC_MARK + 5, y - 15);
+    ctx.closePath(); ctx.fill();
+  }
+  // Locked power tick from the first tap
+  if (phase === 'acc' && pend.meterP != null){
+    ctx.fillStyle = '#fff';
+    rr(x + w*pend.meterP - 2, y - 5, 4, h + 10, 2);
+  }
+  // Needle at the current sweep position
+  const px = x + w * clamp(meter.p, 0, 1);
+  ctx.fillStyle = '#fff';
+  rr(px - 1.5, y - 3, 3, h + 6, 1.5);
+  ctx.beginPath();
+  ctx.moveTo(px, y + h + 4);
+  ctx.lineTo(px - 5, y + h + 11);
+  ctx.lineTo(px + 5, y + h + 11);
+  ctx.closePath(); ctx.fill();
+  // Label
   ctx.fillStyle = 'rgba(255,255,255,.85)';
   ctx.font = '600 11px "Space Grotesk"';
   ctx.textAlign = 'center';
-  ctx.fillText(phase === 'power' ? 'TAP TO SET POWER' : 'TAP AT THE MARK', W/2, y - 12);
+  ctx.fillText(phase === 'power' ? 'TAP IN THE GREEN ZONE' : 'STOP AT THE BLUE MARK', W/2, y - 20);
   ctx.textAlign = 'left';
 }
 
@@ -895,7 +947,7 @@ function frame(now){
           if (w_.h > bottom && w_.h < top){
             const p = toScreen(dist - w_.s, w_.l, w_.h);
             ball.x = p.x; ball.y = p.y; ball.gy = p.gy;
-            ball.scale = p.ppy / widthPerYd(dist);
+            ball.scale = ballRadiusAt(p.sg) / BALL.r;
             finishShot('wall');
             break;
           }
@@ -907,17 +959,17 @@ function frame(now){
       if (at.falling && prog < 0.90){
         const p = toScreen(dist - at.s, at.l, 0);
         ball.x = p.x; ball.y = p.y; ball.gy = p.gy;
-        ball.scale = p.ppy / widthPerYd(dist);
+        ball.scale = ballRadiusAt(p.sg) / BALL.r;
         finishShot('short');
       } else if (prog >= 1){
         const p = toScreen(0, at.l, at.h);
         ball.x = p.x; ball.y = p.y; ball.gy = p.gy;
-        ball.scale = p.ppy / widthPerYd(dist);
+        ball.scale = ballRadiusAt(p.sg) / BALL.r;
         resolveEnd(at.l, at.h);
       } else {
         const p = toScreen(dist - at.s, at.l, at.h);
         ball.x = p.x; ball.y = p.y; ball.gy = p.gy;
-        ball.scale = p.ppy / widthPerYd(dist);
+        ball.scale = ballRadiusAt(p.sg) / BALL.r;
         ball.rot += dt * 14 * shot.power;
       }
     }
